@@ -2,7 +2,7 @@
 <!--
   물로켓 시뮬레이션 (Water Rocket Simulation)
   중학교 과학 수업용 - 베르누이 법칙 / 이상기체상태방정식 / 작용·반작용
-  v1.0.0
+  v1.2.0
   단일 파일 (HTML + CSS + JS 인라인). 빌드 과정 없음.
   애니메이션: Canvas 2D / 그래프: Chart.js (CDN)
 -->
@@ -69,6 +69,14 @@
   .pumpinfo .force{color:var(--accent2);}
   .pumpinfo .hard{color:var(--warn); font-weight:bold;}
 
+  /* 압력 경고 / 파열 메시지 */
+  .statusMsg{font-size:13px; margin:10px 0 0; min-height:0; font-weight:bold; border-radius:8px; line-height:1.4;}
+  .statusMsg:empty{display:none;}
+  .statusMsg.warn{color:#ffb300; background:rgba(255,112,67,0.12); border:1px solid #ff7043; padding:8px 10px;}
+  .statusMsg.burst{color:#ff5252; background:rgba(255,82,82,0.16); border:1px solid #ff5252; padding:8px 10px;
+                   animation:burstPulse .5s ease-out 3;}
+  @keyframes burstPulse{0%{transform:scale(1);}50%{transform:scale(1.04);}100%{transform:scale(1);}}
+
   details{margin-top:6px; border-top:1px solid var(--line); padding-top:10px;}
   details summary{cursor:pointer; color:var(--accent); font-size:14px; font-weight:bold;}
   details .field label{color:var(--muted); font-size:12px;}
@@ -111,6 +119,7 @@
         <button class="secondary" id="pump5Btn" style="flex:0 0 60px;">+5</button>
       </div>
       <div class="pumpinfo" id="pumpInfo"></div>
+      <div class="statusMsg" id="statusMsg"></div>
     </div>
 
     <div class="field">
@@ -196,6 +205,8 @@ const CONFIG = {
   dt: 0.004,             // 적분 시간 간격 (s)
   maxSimTime: 30,        // 최대 시뮬레이션 시간 (s)
   pumpForceThreshold: 250, // 이 힘(N)을 넘으면 "힘들어요" 표시
+  WARNING_PRESSURE_ATM: 6, // 이 압력(atm) 이상이면 경고 구간 (게이지 경고색 + 흔들림)
+  BURST_PRESSURE_ATM: 7,   // 이 압력(atm)을 "초과"하면 연료통 파열 (이전의 7 atm clamp 제거)
   // 공기저항은 무시한다.
 };
 
@@ -207,6 +218,7 @@ const state = {
   pumpCount: 0,
   angle: 45,             // deg
   gravityOn: true,
+  burst: false,          // 연료통 파열 여부 (true면 펌프질·발사 비활성화, 초기화로만 복구)
 };
 
 let history = [];        // 이전 발사 궤적 저장 (겹쳐보기용)
@@ -356,6 +368,19 @@ function drawTank(P, T, waterVol){
   const W = tankCv.width, H = tankCv.height;
   tctx.clearRect(0,0,W,H);
 
+  // 파열 상태면 터지는 연출만 그린다
+  if (state.burst){ drawBurst(); return; }
+
+  const atm = P / CONFIG.Patm;
+  const inWarning = atm >= CONFIG.WARNING_PRESSURE_ATM; // 경고 구간 (6 atm 이상)
+
+  // 경고 구간이면 탱크 전체가 불안하게 흔들림
+  tctx.save();
+  if (inWarning){
+    const mag = 1.5 + Math.min(2.5, (atm - CONFIG.WARNING_PRESSURE_ATM)); // 압력 높을수록 더 흔들림
+    tctx.translate((Math.random()-0.5)*mag, (Math.random()-0.5)*mag);
+  }
+
   // 탱크 외곽
   const tx=170, ty=15, tw=200, th=H-30;
   tctx.fillStyle = '#0a1220';
@@ -384,8 +409,8 @@ function drawTank(P, T, waterVol){
     tctx.beginPath(); tctx.arc(m.x, m.y, 2.0, 0, Math.PI*2); tctx.fill();
   }
 
-  // 탱크 테두리
-  tctx.strokeStyle = '#5a7196'; tctx.lineWidth = 2;
+  // 탱크 테두리 (경고 구간이면 붉게)
+  tctx.strokeStyle = inWarning ? '#ff5252' : '#5a7196'; tctx.lineWidth = inWarning ? 3 : 2;
   tctx.strokeRect(tx,ty,tw,th);
   // 노즐
   tctx.fillStyle='#5a7196';
@@ -394,9 +419,14 @@ function drawTank(P, T, waterVol){
   // 수치 표시
   tctx.fillStyle = '#e8eef7'; tctx.font = 'bold 14px sans-serif'; tctx.textAlign='left';
   tctx.fillText('압력', 20, 55);
-  tctx.fillStyle = '#ffd54f';
+  // 경고 구간이면 게이지 수치를 경고색(빨강/주황)으로
+  tctx.fillStyle = inWarning ? '#ff5252' : '#ffd54f';
   tctx.font = 'bold 22px sans-serif';
   tctx.fillText((P/CONFIG.Patm).toFixed(2) + ' atm', 20, 80);
+  if (inWarning){
+    tctx.fillStyle = '#ffb300'; tctx.font = 'bold 11px sans-serif';
+    tctx.fillText('⚠ 위험', 120, 80);
+  }
   tctx.fillStyle = '#e8eef7'; tctx.font = 'bold 14px sans-serif';
   tctx.fillText('온도', 20, 115);
   tctx.fillStyle = '#ff9e6d'; tctx.font = 'bold 22px sans-serif';
@@ -404,6 +434,92 @@ function drawTank(P, T, waterVol){
 
   tctx.fillStyle='#9fb2cc'; tctx.font='11px sans-serif'; tctx.textAlign='center';
   tctx.fillText('물 '+(waterVol*1000).toFixed(2)+' L', tx+tw/2, ty+th-6);
+
+  tctx.restore();
+}
+
+/* =====================================================================
+   연료통 파열 연출 (BURST)
+   - 7 atm 초과 시 triggerBurst()가 파편을 만들고 state.burst = true.
+   - drawBurst()는 파편이 흩어지는 애니메이션 + "펑" 효과를 그린다.
+   ===================================================================== */
+let burstStart = 0;          // 파열 시작 시각 (performance.now)
+let burstFragments = [];     // 파편 목록
+
+function triggerBurst(){
+  if (state.burst) return;
+  state.burst = true;
+  burstStart = performance.now();
+
+  // 탱크 중심에서 파편을 사방으로 날린다
+  const W = tankCv.width, H = tankCv.height;
+  const cx = 170 + 200/2, cy = 15 + (H-30)/2;
+  burstFragments = [];
+  const N = 18;
+  for (let i=0;i<N;i++){
+    const a = Math.random()*Math.PI*2;
+    const sp = 60 + Math.random()*160;            // 초기 속력 (px/s)
+    burstFragments.push({
+      x: cx + (Math.random()-0.5)*40,
+      y: cy + (Math.random()-0.5)*60,
+      vx: Math.cos(a)*sp,
+      vy: Math.sin(a)*sp - 60,                     // 살짝 위로 튀게
+      size: 6 + Math.random()*12,
+      rot: Math.random()*Math.PI,
+      vr: (Math.random()-0.5)*8,
+      hue: Math.random()<0.5 ? '#5a7196' : '#dfe8f5',
+    });
+  }
+
+  // 추가 펌프질·발사 비활성화
+  setControlsDisabled(true);
+  refreshPumpInfo();
+}
+
+function drawBurst(){
+  const W = tankCv.width, H = tankCv.height;
+  const elapsed = Math.max(0, (performance.now() - burstStart)/1000);
+
+  // 초반 섬광 (플래시)
+  if (elapsed < 0.18){
+    tctx.fillStyle = `rgba(255,230,160,${0.6*(1-elapsed/0.18)})`;
+    tctx.fillRect(0,0,W,H);
+  }
+
+  // 충격파 링 (확장)
+  const cx = 170 + 200/2, cy = 15 + (H-30)/2;
+  const ringR = elapsed * 320;
+  if (ringR < Math.max(W,H)){
+    tctx.strokeStyle = `rgba(255,120,67,${Math.max(0,0.8 - elapsed)})`;
+    tctx.lineWidth = 4;
+    tctx.beginPath(); tctx.arc(cx, cy, ringR, 0, Math.PI*2); tctx.stroke();
+  }
+
+  // 파편 (중력 적용 + 회전)
+  const g = 220; // px/s^2
+  for (const f of burstFragments){
+    const fx = f.x + f.vx*elapsed;
+    const fy = f.y + f.vy*elapsed + 0.5*g*elapsed*elapsed;
+    const rot = f.rot + f.vr*elapsed;
+    tctx.save();
+    tctx.translate(fx, fy);
+    tctx.rotate(rot);
+    tctx.fillStyle = f.hue;
+    tctx.fillRect(-f.size/2, -f.size/2, f.size, f.size*0.7);
+    tctx.restore();
+  }
+
+  // 메시지
+  tctx.fillStyle = '#ff5252'; tctx.font = 'bold 22px sans-serif'; tctx.textAlign = 'center';
+  tctx.fillText('💥 펑!', W/2, H/2 - 6);
+  tctx.fillStyle = '#ffb3b3'; tctx.font = 'bold 12px sans-serif';
+  tctx.fillText('연료통이 터졌어요 — 초기화 후 다시 시도하세요', W/2, H/2 + 16);
+}
+
+/* 펌프질·발사 버튼 일괄 활성/비활성 (파열 시 잠금, 초기화 시 해제) */
+function setControlsDisabled(disabled){
+  const ids = ['pumpBtn','pump5Btn','launchBtn'];
+  ids.forEach(id=>{ const el = document.getElementById(id); if (el) el.disabled = disabled; });
 }
 
 /* =====================================================================
@@ -691,12 +807,26 @@ function renderChart(){
    ===================================================================== */
 function refreshPumpInfo(){
   const ts = currentTankState();
+  const atm = ts.P / CONFIG.Patm;
   document.getElementById('pumpVal').textContent = state.pumpCount + ' 회';
-  let html = `압력 <span class="force">${(ts.P/CONFIG.Patm).toFixed(2)} atm</span> · `
+  let html = `압력 <span class="force">${atm.toFixed(2)} atm</span> · `
            + `온도 <span class="force">${(ts.T-273.15).toFixed(1)}°C</span> · `
            + `필요한 힘 <span class="force">${ts.Fpump.toFixed(0)} N</span>`;
   if (ts.Fpump > CONFIG.pumpForceThreshold) html += ` <span class="hard">— 점점 힘들어요!</span>`;
   document.getElementById('pumpInfo').innerHTML = html;
+
+  // 경고 / 파열 메시지
+  const statusEl = document.getElementById('statusMsg');
+  if (state.burst){
+    statusEl.className = 'statusMsg burst';
+    statusEl.textContent = '💥 펑! 연료통이 터졌어요. 압력이 너무 높았어요. 초기화 후 다시 시도하세요.';
+  } else if (atm >= CONFIG.WARNING_PRESSURE_ATM){
+    statusEl.className = 'statusMsg warn';
+    statusEl.textContent = `⚠️ 위험! ${CONFIG.BURST_PRESSURE_ATM} atm을 넘으면 연료통이 터질 수 있어요!`;
+  } else {
+    statusEl.className = 'statusMsg';
+    statusEl.textContent = '';
+  }
 }
 
 // 물의 양
@@ -706,9 +836,18 @@ document.getElementById('water').addEventListener('input', e=>{
   document.getElementById('waterVal').textContent = L.toFixed(2)+' L';
   refreshPumpInfo();
 });
-// 펌프질
-document.getElementById('pumpBtn').addEventListener('click', ()=>{ state.pumpCount++; refreshPumpInfo(); });
-document.getElementById('pump5Btn').addEventListener('click', ()=>{ state.pumpCount+=5; refreshPumpInfo(); });
+// 펌프질 — 매 스트로크 후 새 압력을 확인하고, 7 atm을 "초과"하면 그 자리에서 파열
+function doPump(n){
+  if (state.burst) return;                       // 이미 터졌으면 펌프질 불가
+  state.pumpCount += n;
+  refreshPumpInfo();
+  const atm = currentTankState().P / CONFIG.Patm;
+  if (atm > CONFIG.BURST_PRESSURE_ATM){          // 엄밀히 7 초과 → 파열
+    triggerBurst();
+  }
+}
+document.getElementById('pumpBtn').addEventListener('click', ()=> doPump(1));
+document.getElementById('pump5Btn').addEventListener('click', ()=> doPump(5));
 // 각도
 const angleEl = document.getElementById('angle');
 angleEl.addEventListener('input', e=>{
@@ -743,6 +882,7 @@ bindCfg('cfg_patm',v=> CONFIG.Patm = v * 101325);
 const launchBtn = document.getElementById('launchBtn');
 const histColors = ['#ce93d8','#80cbc4','#ffab91','#90caf9','#fff59d','#a5d6a7','#f48fb1'];
 launchBtn.addEventListener('click', ()=>{
+  if (state.burst){ alert('연료통이 터졌어요. 초기화 후 다시 시도하세요.'); return; } // 파괴된 로켓은 발사 불가
   lastSim = simulate();
   if (lastSim.d.t.length < 2){ alert('펌프질을 더 해서 압력을 높여주세요!'); return; }
   setupFlightMap(lastSim.d);
@@ -758,11 +898,15 @@ launchBtn.addEventListener('click', ()=>{
 // 초기화
 document.getElementById('resetBtn').addEventListener('click', ()=>{
   state.pumpCount = 0;
+  state.burst = false;          // 파열 상태 완전 해제 (연료통 복구)
+  burstFragments = [];
+  burstStart = 0;
   mode = 'idle';
   lastSim = null;
   flightMap = null;
   MOL.list = [];
-  refreshPumpInfo();
+  setControlsDisabled(false);   // 펌프질·발사 재활성화
+  refreshPumpInfo();            // 메시지 제거 + 게이지 색 원복
   renderChart();
 });
 
