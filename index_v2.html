@@ -1,0 +1,1040 @@
+<!DOCTYPE html>
+<!--
+  물로켓 시뮬레이션 (Water Rocket Simulation)
+  중학교 과학 수업용 - 통제된 실험: '물의 양'만 바꾸고 '수평 이동거리'를 관찰
+  v2.0.0
+  단일 파일 (HTML + CSS + JS 인라인). 빌드 과정 없음.
+  애니메이션: Canvas 2D / 그래프: Chart.js (CDN)
+
+  핵심 목표: 발사각(45°)·압력(3atm)은 고정. 오직 물의 양만 조작변인.
+             발사할 때마다 (물의 양 → 수평 이동거리)를 기록해 비교한다.
+
+  v2 변경점:
+    1) 비행 장면 격자를 "고정 좌표 격자"로 변경 — 발사마다 배율이 바뀌지 않고
+       공간에 고정된 격자 위로 로켓이 지나간다 (발사 간 크기 비교 가능).
+    2) '속도-시간' 그래프를 vx(수평)·vy(연직) 두 성분으로 분리 표시.
+    3) 발사할 때마다 모든 시계열 그래프에 이전 발사 곡선이 누적(겹쳐) 표시
+       — 발사별 고유 색 + '발사 N' 범례. (지우기 전까지 사라지지 않음)
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>물로켓 시뮬레이션 — 물의 양과 수평 이동거리</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0f1623; --panel:#18243a; --panel2:#1f2f4d; --line:#2d4467;
+    --accent:#4fc3f7; --accent2:#ffd54f; --text:#e8eef7; --muted:#9fb2cc;
+    --good:#66bb6a; --warn:#ff7043;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; font-family:"Malgun Gothic","맑은 고딕",system-ui,sans-serif;
+    background:var(--bg); color:var(--text); line-height:1.45;
+  }
+  header{
+    padding:14px 20px; background:linear-gradient(90deg,#16243d,#1d3358);
+    border-bottom:1px solid var(--line);
+  }
+  header h1{margin:0; font-size:20px;}
+  header p{margin:4px 0 0; font-size:13px; color:var(--muted);}
+  .wrap{
+    display:flex; flex-wrap:wrap; gap:14px; padding:14px; align-items:flex-start;
+  }
+  .col{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px;}
+  .col-left{flex:1 1 260px; min-width:240px; max-width:330px;}
+  .col-center{flex:2 1 520px; min-width:320px;}
+  .col-right{flex:1.4 1 420px; min-width:320px;}
+
+  h2.section{font-size:15px; margin:0 0 10px; color:var(--accent);}
+  .field{margin-bottom:14px;}
+  .field label{display:block; font-size:13px; margin-bottom:5px; color:var(--text);}
+  .field .val{color:var(--accent2); font-weight:bold;}
+  input[type=range]{width:100%; accent-color:var(--accent);}
+  input[type=number]{
+    width:100%; padding:6px 8px; background:#0d1626; color:var(--text);
+    border:1px solid var(--line); border-radius:6px;
+  }
+  .row{display:flex; gap:8px; align-items:center;}
+  .row > *{flex:1;}
+
+  /* 물의 양 — 주 조작변인 강조 박스 */
+  .main-control{
+    background:linear-gradient(90deg,#13314f,#17385a); border:1px solid var(--accent);
+    border-radius:12px; padding:14px; margin-bottom:14px;
+  }
+  .main-control .big-val{font-size:30px; font-weight:bold; color:var(--accent2); line-height:1;}
+  .main-control .cap{font-size:12px; color:var(--muted); margin-bottom:8px;}
+
+  button{
+    cursor:pointer; border:none; border-radius:8px; padding:10px 12px;
+    font-size:14px; font-weight:bold; color:#0d1626; background:var(--accent);
+    transition:filter .12s;
+  }
+  button:hover{filter:brightness(1.08);}
+  button:disabled{opacity:.5; cursor:not-allowed;}
+  button.secondary{background:var(--panel2); color:var(--text); border:1px solid var(--line);}
+  button.launch{background:var(--good); color:#06210b; font-size:17px; padding:13px;}
+  button.reset{background:var(--warn); color:#2b0d04;}
+
+  /* 압력 경고 / 파열 메시지 */
+  .statusMsg{font-size:13px; margin:10px 0 0; min-height:0; font-weight:bold; border-radius:8px; line-height:1.4;}
+  .statusMsg:empty{display:none;}
+  .statusMsg.warn{color:#ffb300; background:rgba(255,112,67,0.12); border:1px solid #ff7043; padding:8px 10px;}
+  .statusMsg.burst{color:#ff5252; background:rgba(255,82,82,0.16); border:1px solid #ff5252; padding:8px 10px;
+                   animation:burstPulse .5s ease-out 3;}
+  @keyframes burstPulse{0%{transform:scale(1);}50%{transform:scale(1.04);}100%{transform:scale(1);}}
+
+  details{margin-top:6px; border-top:1px solid var(--line); padding-top:10px;}
+  details summary{cursor:pointer; color:var(--accent); font-size:14px; font-weight:bold;}
+  details .field label{color:var(--muted); font-size:12px;}
+
+  canvas{display:block; max-width:100%; background:#0a1220; border-radius:10px;}
+  .canvas-label{font-size:12px; color:var(--muted); margin:0 0 6px;}
+
+  /* 수평 이동거리 — 결과 강조 */
+  .range-readout{
+    background:linear-gradient(90deg,#1a3a22,#234a2c); border:1px solid var(--good);
+    border-radius:12px; padding:12px 16px; margin-bottom:12px;
+    display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;
+  }
+  .range-readout .label{font-size:14px; color:#bfe6c6;}
+  .range-readout .value{font-size:36px; font-weight:bold; color:#9cff9c;}
+  .range-readout .sub{font-size:12px; color:var(--muted); margin-left:auto;}
+
+  .tabs{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;}
+  .tabs button{padding:6px 10px; font-size:12px; background:var(--panel2); color:var(--muted); border:1px solid var(--line);}
+  .tabs button.active{background:var(--accent); color:#06210b;}
+  .tabs button.key{border-color:var(--accent2); color:var(--accent2);}
+  .tabs button.key.active{background:var(--accent2); color:#332700;}
+
+  .overlay-ctrl{display:flex; gap:8px; align-items:center; margin-top:10px; font-size:12px; color:var(--muted);}
+  .overlay-ctrl input{accent-color:var(--accent2);}
+
+  .results-wrap{margin-top:14px; border-top:1px solid var(--line); padding-top:10px;}
+  .results-wrap h3{font-size:13px; margin:0 0 6px; color:var(--accent); display:flex; align-items:center; gap:8px;}
+  .results-scroll{max-height:190px; overflow:auto;}
+  table.results{width:100%; border-collapse:collapse; font-size:12px;}
+  table.results th, table.results td{border-bottom:1px solid var(--line); padding:5px 6px; text-align:left;}
+  table.results th{color:var(--muted); position:sticky; top:0; background:var(--panel);}
+  table.results tr.best{background:rgba(255,213,79,0.14);}
+  table.results tr.best td{color:var(--accent2); font-weight:bold;}
+
+  .note{font-size:12px; color:var(--muted); margin-top:12px; border-top:1px solid var(--line); padding-top:10px;}
+  .badge{display:inline-block; background:var(--panel2); border:1px solid var(--line); border-radius:6px; padding:2px 7px; margin:2px 0; font-size:12px;}
+  .chartbox{position:relative; height:320px;}
+</style>
+</head>
+<body>
+<header>
+  <h1>🚀 물로켓 시뮬레이션</h1>
+  <p>발사각·압력은 <b>고정</b>! 오직 <b>물의 양</b>만 바꾸어 <b>수평 이동거리</b>가 어떻게 달라지는지 관찰하는 통제된 실험이에요.</p>
+</header>
+
+<div class="wrap">
+
+  <!-- ============ 좌측: 조작 패널 ============ -->
+  <div class="col col-left">
+    <h2 class="section">조작변인</h2>
+
+    <!-- 주 조작변인: 물의 양 -->
+    <div class="main-control">
+      <div class="cap">💧 물의 양 (조작변인)</div>
+      <div><span class="big-val" id="waterVal">0.60</span> <span style="font-size:18px;color:var(--accent2);">L</span></div>
+      <input type="range" id="water" min="0" max="2" step="0.05" value="0.6" style="margin-top:8px;" />
+      <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--muted);">
+        <span>0 L</span><span>2 L</span>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:8px;">
+      <button class="launch" id="launchBtn">🚀 발사!</button>
+      <button class="reset" id="resetBtn" style="flex:0 0 84px;">초기화</button>
+    </div>
+    <div class="statusMsg" id="statusMsg"></div>
+
+    <p style="font-size:12px; color:var(--muted); margin-top:12px;">
+      고정값 → 발사각 <b id="fixAngle">45</b>° · 압력 <b id="fixPressure">3</b> atm<br>
+      발사하면 자동으로 <b id="fixPressure2">3</b> atm까지 가압돼요.
+    </p>
+
+    <!-- 고급 옵션: 평소엔 숨김. 열어야만 고정값/통제변인 변경 가능 -->
+    <details>
+      <summary>⚙️ 고급 옵션 (고정값 · 통제변인)</summary>
+      <div style="margin-top:10px;">
+        <div class="field"><label>발사각 (도) — 기본 45° 고정</label><input type="number" id="cfg_angle" value="45" step="1" min="0" max="90"></div>
+        <div class="field"><label>압력 (atm) — 기본 3 atm 고정</label><input type="number" id="cfg_pressure" value="3" step="0.5" min="1"></div>
+        <div class="field"><label>중력가속도 g (m/s²)</label><input type="number" id="cfg_g" value="9.8" step="0.1"></div>
+        <div class="field"><label>빈 로켓 질량 (kg)</label><input type="number" id="cfg_mass" value="0.3" step="0.05"></div>
+        <div class="field"><label>탱크 크기 (L)</label><input type="number" id="cfg_tank" value="2.0" step="0.1"></div>
+        <div class="field"><label>주변 온도 (°C)</label><input type="number" id="cfg_temp" value="20" step="1"></div>
+        <div class="field"><label>주변 압력 (atm)</label><input type="number" id="cfg_patm" value="1.0" step="0.1"></div>
+        <p style="font-size:11px; color:var(--muted);">※ 압력을 5 atm 이상 올리면 위험, 6 atm을 넘으면 연료통이 터져요.</p>
+      </div>
+    </details>
+  </div>
+
+  <!-- ============ 가운데: 애니메이션 ============ -->
+  <div class="col col-center">
+    <!-- 수평 이동거리 결과 강조 -->
+    <div class="range-readout">
+      <span class="label">수평 이동거리</span>
+      <span class="value" id="rangeReadout">— m</span>
+      <span class="sub" id="rangeSub">발사하면 이곳에 결과가 표시돼요</span>
+    </div>
+    <p class="canvas-label">🎬 발사 장면 — 좌측 하단에 연료통 내부(기체분자)가 보여요</p>
+    <canvas id="sceneCanvas" width="560" height="380"></canvas>
+  </div>
+
+  <!-- ============ 우측: 그래프 + 기록 ============ -->
+  <div class="col col-right">
+    <h2 class="section">그래프</h2>
+    <div class="tabs" id="tabs">
+      <button data-chart="rangeWater" class="key active">★ 수평거리-물의양</button>
+      <button data-chart="speed">속도 vx·vy-시간</button>
+      <button data-chart="accel">가속도-시간</button>
+      <button data-chart="dist">거리-시간</button>
+      <button data-chart="pt">압력-온도</button>
+      <button data-chart="traj">궤적 (y-x)</button>
+    </div>
+    <div class="chartbox"><canvas id="chart"></canvas></div>
+    <div class="overlay-ctrl">
+      <input type="checkbox" id="overlay" checked />
+      <label for="overlay" style="margin:0;">이전 발사 곡선 겹쳐보기 (모든 그래프)</label>
+      <button class="secondary" id="clearHist" style="flex:0 0 auto; padding:4px 8px; font-size:11px;">겹침 지우기</button>
+    </div>
+
+    <!-- 발사 기록 표 -->
+    <div class="results-wrap">
+      <h3>📋 발사 기록 (물의 양 → 수평 이동거리)
+        <button class="secondary" id="clearResults" style="margin-left:auto; padding:3px 8px; font-size:11px;">기록 지우기</button>
+      </h3>
+      <div class="results-scroll">
+        <table class="results">
+          <thead><tr><th>#</th><th>물의 양</th><th>수평 이동거리</th></tr></thead>
+          <tbody id="resultsBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="note">
+      <strong>무엇을 관찰할까요?</strong><br>
+      • 물이 뒤로 빠르게 분출되며 로켓은 앞으로 나아갑니다 (작용·반작용).<br>
+      • 물의 양만 바꾸며 여러 번 발사해 <b>수평 이동거리</b>를 비교해 보세요.<br>
+      • 물이 너무 적으면 밀어낼 게 없고, 너무 많으면 공기(압력)가 부족해요.<br>
+      • <span class="badge">가장 멀리 가는 물의 양(최적값)을 찾아보세요!</span>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =====================================================================
+   작은 도우미
+   ===================================================================== */
+function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+function roundRect(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+
+/* =====================================================================
+   CONFIG — 물리 상수 (조정 쉽게 한 곳에 모음, 모두 SI 단위)
+   ===================================================================== */
+const CONFIG = {
+  // --- 고정 기본값 (평소엔 고정, 고급 옵션에서만 변경) ---
+  LAUNCH_ANGLE_DEG: 45,  // 발사각 (도) — 기본 45° 고정
+  PRESSURE_ATM: 3,       // 탱크 압력 (atm, 절대압) — 기본 3 atm 고정, 발사 시 자동 가압
+
+  // --- 통제변인 / 물리 상수 ---
+  g: 9.8,                // 중력가속도 (m/s^2)
+  emptyMass: 0.3,        // 빈 로켓 질량 (kg) — 물 없는 상태의 로켓 무게
+  tankVolume: 0.002,     // 탱크 부피 (m^3) = 2 L
+  ambientT: 293.15,      // 주변 온도 (K) = 20°C
+  Patm: 101325,          // 주변 압력 (Pa) = 1 atm
+  rhoWater: 1000,        // 물 밀도 (kg/m^3)
+  GAMMA: 1.4,            // 비열비 (공기, 단열 과정)
+  A_nozzle: 4.9e-4,      // 노즐 단면적 (m^2) ≈ 지름 2.5cm
+  dt: 0.002,             // 적분 시간 간격 (s) — 작게 잡아 매끄러운 포물선
+  maxSimTime: 30,        // 최대 시뮬레이션 시간 (s)
+  WARNING_PRESSURE_ATM: 5, // 이 압력(atm) 이상이면 경고 구간 (게이지 경고색 + 흔들림)
+  BURST_PRESSURE_ATM: 6,   // 이 압력(atm)을 "초과"하면 연료통 파열
+  // 공기저항은 무시한다.
+};
+
+/* =====================================================================
+   상태 — 평소 조작하는 건 '물의 양' 하나뿐
+   ===================================================================== */
+const state = {
+  waterVolume: 0.0006,   // m^3 (= 0.6 L) — 유일한 주 조작변인
+  burst: false,          // 연료통 파열 여부 (초기화로만 복구)
+};
+
+let history = [];        // 이전 발사 궤적 저장 (겹쳐보기용)
+let results = [];        // 발사 기록 {waterL, rangeM} — 핵심 학습 그래프/표용
+
+/* =====================================================================
+   탱크 상태 계산 (발사 전, 고정 압력 기준)
+   --- 단열 압축 모델 ---
+   탱크 공기를 대기압에서 목표 압력 P까지 단열 압축했다고 본다.
+     단열: P·V^γ = 일정,  T·V^(γ-1) = 일정
+     부피 압축비 r = (P / P_atm)^(1/γ)
+     ⇒ T = T_amb · r^(γ-1) = T_amb · (P/P_atm)^((γ-1)/γ)
+   압력은 고급 옵션의 PRESSURE_ATM 값으로 직접 정해진다(발사 시 자동 가압).
+   ===================================================================== */
+function currentTankState(){
+  const Vair0 = Math.max(CONFIG.tankVolume - state.waterVolume, 1e-6);
+  const P = CONFIG.PRESSURE_ATM * CONFIG.Patm;              // 절대압력 (Pa)
+  const ratio = Math.pow(P / CONFIG.Patm, 1/CONFIG.GAMMA);  // 부피 압축비
+  const T = CONFIG.ambientT * Math.pow(ratio, CONFIG.GAMMA - 1);
+  return { P, T, Vair0 };
+}
+
+/* =====================================================================
+   발사 시뮬레이션 — 구간 근사
+   물 분출 단계를 짧은 시간 간격(dt)으로 나누어 단계별로 계산한다.
+   각 단계:
+     1) 베르누이 — 분출 속도   v_exit = sqrt( 2·(P - P_atm) / ρ )
+     2) 질량 유량              m_dot  = ρ · A_nozzle · v_exit
+     3) 추력 (작용·반작용)     F_thrust = m_dot · v_exit
+     4) 물 부피 감소 / 공기 부피 증가 → 단열 팽창으로 P·T 하강
+     5) 가변질량 로켓 운동
+   ── 물리 핵심 ──
+     · 추력은 발사 방향(θ)으로 작용:  ax += F·cosθ/m,  ay += F·sinθ/m
+     · 중력은 '연직 아래'로만 작용:    ay -= g       (속도 방향이 아님!)
+     · 물 소진(추력 0) 후엔 순수 포물선: ax=0, ay=-g, y=0에서 착지
+   ===================================================================== */
+function simulate(){
+  const { GAMMA, A_nozzle, rhoWater, Patm, emptyMass, dt, maxSimTime, g } = CONFIG;
+
+  // --- 초기 탱크 상태 (고정 압력까지 자동 가압) ---
+  let waterVol = state.waterVolume;
+  let Vair = Math.max(CONFIG.tankVolume - waterVol, 1e-6);
+  let P = CONFIG.PRESSURE_ATM * Patm;
+  const ratio0 = Math.pow(P / Patm, 1/GAMMA);
+  let T = CONFIG.ambientT * Math.pow(ratio0, GAMMA - 1);
+
+  // --- 운동 초기조건 ---
+  const theta = CONFIG.LAUNCH_ANGLE_DEG * Math.PI / 180;
+  let x = 0, y = 0, vx = 0, vy = 0, t = 0;
+
+  const d = { t:[], speed:[], vx:[], vy:[], accel:[], x:[], y:[], P:[], T:[], waterVol:[] };
+  function rec(accelMag){
+    d.t.push(t); d.speed.push(Math.hypot(vx, vy)); d.accel.push(accelMag);
+    d.vx.push(vx); d.vy.push(vy);                 // 속도 성분 분리 기록 (그래프용)
+    d.x.push(x); d.y.push(y); d.P.push(P); d.T.push(T); d.waterVol.push(waterVol);
+  }
+
+  // --- 분출(추력) 단계 ---
+  while (waterVol > 1e-9 && P > Patm + 1 && t < maxSimTime){
+    const vexit = Math.sqrt(2 * (P - Patm) / rhoWater);   // 베르누이
+    const mdot = rhoWater * A_nozzle * vexit;             // 질량 유량
+    const Fthrust = mdot * vexit;                         // 추력 (작용·반작용)
+    const m = emptyMass + rhoWater * waterVol;            // 현재 질량
+    const ax = Fthrust * Math.cos(theta) / m;             // 추력: 발사 방향
+    const ay = Fthrust * Math.sin(theta) / m - g;         // 추력 + 중력(연직 아래)
+    rec(Math.hypot(ax, ay));
+
+    // 운동 적분
+    vx += ax * dt; vy += ay * dt;
+    x += vx * dt; y += vy * dt;
+
+    // 물 배출 / 공기 단열 팽창
+    const dVol = A_nozzle * vexit * dt;
+    waterVol = Math.max(0, waterVol - dVol);
+    const VairNew = CONFIG.tankVolume - waterVol;
+    P = P * Math.pow(Vair / VairNew, GAMMA);
+    T = T * Math.pow(Vair / VairNew, GAMMA - 1);
+    Vair = VairNew;
+    t += dt;
+  }
+
+  const thrustEndIdx = d.t.length;   // 추력이 끝난 프레임 (애니메이션 구간 분리용)
+
+  // --- 자유비행 (순수 포물선): ax=0, ay=-g ---
+  while (t < maxSimTime){
+    rec(g);
+    const prevX = x, prevY = y;
+    vy += -g * dt;          // 중력만 연직 아래로
+    x += vx * dt; y += vy * dt;
+    t += dt;
+    if (y <= 0){
+      // 착지 지점 선형 보간 (정확한 수평 이동거리)
+      const frac = (prevY - y) !== 0 ? prevY / (prevY - y) : 0;
+      x = prevX + (x - prevX) * frac;
+      y = 0;
+      rec(g);
+      break;
+    }
+  }
+
+  const rangeM = Math.max(0, x);   // 착지 수평 이동거리 (m)
+  return { d, thrustEndIdx, rangeM };
+}
+
+/* =====================================================================
+   기체분자 시각화
+   - 개수(밀도) ∝ 압력 (주입된 공기가 많을수록 빽빽)
+   - 속력 ∝ √온도   (½m·v² = (3/2)kT  ⇒  v ∝ √T)
+   ===================================================================== */
+const MOL = { list: [], bounds:{x:0,y:0,w:0,h:0} };
+function targetMolCount(P){
+  return Math.max(6, Math.min(130, Math.round(12 * (P / CONFIG.Patm))));
+}
+function spawnMol(b){
+  return { x: b.x + Math.random()*b.w, y: b.y + Math.random()*b.h,
+           dir: Math.random()*Math.PI*2 };
+}
+function updateMolecules(P, T, bounds){
+  MOL.bounds = bounds;
+  const target = targetMolCount(P);
+  while (MOL.list.length < target) MOL.list.push(spawnMol(bounds));
+  while (MOL.list.length > target) MOL.list.pop();
+  const speed = 0.9 * Math.sqrt(Math.max(0.2, T / CONFIG.ambientT));
+  const b = bounds;
+  for (const m of MOL.list){
+    m.x += Math.cos(m.dir) * speed;
+    m.y += Math.sin(m.dir) * speed;
+    if (m.x < b.x){ m.x = b.x; m.dir = Math.PI - m.dir; }
+    if (m.x > b.x+b.w){ m.x = b.x+b.w; m.dir = Math.PI - m.dir; }
+    if (m.y < b.y){ m.y = b.y; m.dir = -m.dir; }
+    if (m.y > b.y+b.h){ m.y = b.y+b.h; m.dir = -m.dir; }
+    if (Math.random() < 0.03) m.dir += (Math.random()-0.5)*0.6;
+  }
+}
+
+/* =====================================================================
+   발사 장면 캔버스 (연료통 내부 뷰를 좌측 하단에 인셋으로 합침)
+   ===================================================================== */
+const sceneCv = document.getElementById('sceneCanvas');
+const sctx = sceneCv.getContext('2d');
+// 좌측 하단 연료통 내부 뷰 영역 — 로켓 경로/거리 표시와 겹치지 않게
+const TANK_BOX = { x:12, y: sceneCv.height-152, w:152, h:140 };
+
+/* 연료통 내부 뷰 (좌측 하단 인셋) — 기체분자 + 압력/온도/물의 양 */
+function drawTankInset(ctx, box, P, T, waterVol){
+  const { x:bx, y:by, w:bw, h:bh } = box;
+  ctx.save();
+
+  // 패널 배경
+  ctx.fillStyle = 'rgba(8,14,24,0.88)';
+  ctx.strokeStyle = '#2d4467'; ctx.lineWidth = 1;
+  roundRect(ctx, bx, by, bw, bh, 8); ctx.fill(); ctx.stroke();
+
+  ctx.fillStyle = '#9fb2cc'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText('🫧 연료통 내부', bx+8, by+15);
+
+  if (state.burst){ drawBurst(ctx, box); ctx.restore(); return; }
+
+  const atm = P / CONFIG.Patm;
+  const inWarning = atm >= CONFIG.WARNING_PRESSURE_ATM;
+
+  // 경고 구간이면 살짝 흔들림
+  if (inWarning){
+    const mag = 1.2 + Math.min(2.0, atm - CONFIG.WARNING_PRESSURE_ATM);
+    ctx.translate((Math.random()-0.5)*mag, (Math.random()-0.5)*mag);
+  }
+
+  // 탱크 외곽 (패널 우측)
+  const tw = 46, th = bh - 46, tx = bx + bw - tw - 12, ty = by + 24;
+  ctx.fillStyle = '#0a1220'; ctx.fillRect(tx, ty, tw, th);
+
+  const frac = clamp(waterVol / CONFIG.tankVolume, 0, 1);
+  const waterH = th * frac, airH = th - waterH;
+  const air = { x:tx+3, y:ty+3, w:tw-6, h:Math.max(2, airH-3) };
+  updateMolecules(P, T, air);
+
+  // 공기 / 물 영역
+  ctx.fillStyle = 'rgba(80,130,200,0.10)'; ctx.fillRect(tx, ty, tw, airH);
+  ctx.fillStyle = 'rgba(56,142,235,0.55)'; ctx.fillRect(tx, ty+airH, tw, waterH);
+
+  // 기체분자 (온도 높을수록 붉게)
+  const heat = clamp((T - CONFIG.ambientT)/120, 0, 1);
+  const r = (150+heat*105)|0, gg = (210-heat*120)|0, bl = (255-heat*180)|0;
+  ctx.fillStyle = `rgb(${r},${gg},${bl})`;
+  for (const m of MOL.list){ ctx.beginPath(); ctx.arc(m.x, m.y, 1.6, 0, Math.PI*2); ctx.fill(); }
+
+  // 테두리 + 노즐
+  ctx.strokeStyle = inWarning ? '#ff5252' : '#5a7196'; ctx.lineWidth = inWarning ? 2 : 1.5;
+  ctx.strokeRect(tx, ty, tw, th);
+  ctx.fillStyle = '#5a7196'; ctx.fillRect(tx+tw/2-5, ty+th, 10, 6);
+
+  // 수치 (패널 좌측)
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#cfd8e6'; ctx.font = '10px sans-serif'; ctx.fillText('압력', bx+8, by+40);
+  ctx.fillStyle = inWarning ? '#ff5252' : '#ffd54f'; ctx.font = 'bold 17px sans-serif';
+  ctx.fillText(atm.toFixed(2)+' atm', bx+8, by+59);
+  if (inWarning){ ctx.fillStyle = '#ffb300'; ctx.font = 'bold 10px sans-serif'; ctx.fillText('⚠ 위험', bx+8, by+72); }
+  ctx.fillStyle = '#cfd8e6'; ctx.font = '10px sans-serif'; ctx.fillText('온도', bx+8, by+90);
+  ctx.fillStyle = '#ff9e6d'; ctx.font = 'bold 17px sans-serif';
+  ctx.fillText((T-273.15).toFixed(0)+' °C', bx+8, by+109);
+  ctx.fillStyle = '#9fb2cc'; ctx.font = '10px sans-serif';
+  ctx.fillText('물 '+(waterVol*1000).toFixed(2)+' L', bx+8, by+128);
+
+  ctx.restore();
+}
+
+/* =====================================================================
+   연료통 파열 연출 (BURST) — 압력을 6 atm 초과로 올렸을 때
+   ===================================================================== */
+let burstStart = 0;
+let burstFragments = [];
+
+function triggerBurst(){
+  if (state.burst) return;
+  state.burst = true;
+  burstStart = performance.now();
+  burstFragments = [];
+  for (let i=0;i<16;i++){
+    const a = Math.random()*Math.PI*2, sp = 40 + Math.random()*120;
+    burstFragments.push({
+      vx: Math.cos(a)*sp, vy: Math.sin(a)*sp - 40,
+      jx: (Math.random()-0.5)*20, jy: (Math.random()-0.5)*24,
+      size: 5 + Math.random()*9, rot: Math.random()*Math.PI, vr: (Math.random()-0.5)*8,
+      hue: Math.random()<0.5 ? '#5a7196' : '#dfe8f5',
+    });
+  }
+  setControlsDisabled(true);
+  updateStatus();
+}
+
+function drawBurst(ctx, box){
+  const cx = box.x + box.w/2, cy = box.y + box.h/2;
+  const el = Math.max(0, (performance.now() - burstStart)/1000);
+
+  if (el < 0.18){ ctx.fillStyle = `rgba(255,230,160,${0.6*(1-el/0.18)})`; ctx.fillRect(box.x, box.y, box.w, box.h); }
+
+  const ringR = el * 180;
+  if (ringR < box.w){
+    ctx.strokeStyle = `rgba(255,120,67,${Math.max(0,0.8 - el)})`; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(cx, cy, ringR, 0, Math.PI*2); ctx.stroke();
+  }
+
+  const gg = 180;
+  for (const f of burstFragments){
+    const fx = cx + f.jx + f.vx*el;
+    const fy = cy + f.jy + f.vy*el + 0.5*gg*el*el;
+    ctx.save(); ctx.translate(fx, fy); ctx.rotate(f.rot + f.vr*el);
+    ctx.fillStyle = f.hue; ctx.fillRect(-f.size/2, -f.size/2, f.size, f.size*0.7); ctx.restore();
+  }
+
+  ctx.fillStyle = '#ff5252'; ctx.font = 'bold 15px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('💥 펑!', cx, cy-2);
+  ctx.fillStyle = '#ffb3b3'; ctx.font = 'bold 9px sans-serif';
+  ctx.fillText('초기화 후 다시', cx, cy+14);
+}
+
+/* 발사 버튼 등 일괄 활성/비활성 (파열 시 잠금, 초기화 시 해제) */
+function setControlsDisabled(disabled){
+  ['launchBtn'].forEach(id=>{ const el = document.getElementById(id); if (el) el.disabled = disabled; });
+}
+
+/* =====================================================================
+   로켓 모양 (cx,cy = 노즐(뒤쪽) 기준점, len 길이, ang 향하는 방향)
+   ===================================================================== */
+function drawRocketShape(ctx, cx, cy, len, ang){
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(ang + Math.PI/2);   // 기본은 위쪽을 향함
+  const w = 13;
+  ctx.fillStyle = '#dfe8f5';
+  ctx.fillRect(-w/2, 0, w, -len*0.72);
+  ctx.fillStyle = '#ff7043';
+  ctx.beginPath(); ctx.moveTo(-w/2,-len*0.72); ctx.lineTo(0,-len); ctx.lineTo(w/2,-len*0.72); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#4fc3f7';
+  ctx.beginPath(); ctx.moveTo(-w/2,0); ctx.lineTo(-w/2-8,8); ctx.lineTo(-w/2,-12); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(w/2,0); ctx.lineTo(w/2+8,8); ctx.lineTo(w/2,-12); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+/* =====================================================================
+   발사대 / 비행 좌표 매핑 — 물리좌표(m)와 픽셀좌표 분리
+   원점(발사점)은 연료통 인셋 오른쪽에 두어 경로가 인셋과 겹치지 않게 한다.
+   ===================================================================== */
+const ORIGIN_X = 185;      // 발사점 픽셀 x (연료통 인셋 오른쪽)
+function groundY(){ return sceneCv.height - 40; }
+
+/* ── 고정 좌표 격자 (v2) ──────────────────────────────────────────────
+   배율을 발사마다 바꾸지 않고 "픽셀/미터"를 상수로 고정한다.
+   → 격자선은 항상 같은 픽셀 위치에 그려져 공간에 고정되고,
+     로켓은 그 위를 지나간다. 발사 간 도달 거리를 눈으로 비교할 수 있다.
+   기준 가시 범위(REF_X·REF_Y)가 화면에 들어오도록 배율을 한 번만 계산한다. */
+const GRID_REF_X = 90, GRID_REF_Y = 70;   // 화면에 담을 기준 범위 (m)
+const FIXED_SCALE = Math.min(
+  (sceneCv.width - ORIGIN_X - 20) / GRID_REF_X,   // 가로 가용폭
+  (groundY() - 26) / GRID_REF_Y                   // 세로 가용높이
+);
+
+/* 눈금 간격을 1·2·5×10ⁿ 형태의 "보기 좋은" 값으로 선택 */
+function niceStep(max, divisions){
+  const raw = max / Math.max(1, divisions);
+  const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+  const n = raw / pow;
+  let mult;
+  if (n < 1.5) mult = 1; else if (n < 3) mult = 2; else if (n < 7) mult = 5; else mult = 10;
+  return mult * pow;
+}
+
+let flightMap = null;      // {scale, ox, oy, maxX, maxY, peakIdx, lastIdx}
+function setupFlightMap(d){
+  const ox = ORIGIN_X, oy = groundY();
+  const maxX = Math.max(1, ...d.x);
+  const maxY = Math.max(1, ...d.y);
+  // 배율은 고정 (발사마다 달라지지 않음) — 격자가 공간에 고정된다.
+  const scale = FIXED_SCALE;
+  // 최고점(최대 높이) 인덱스
+  let peakIdx = 0;
+  for (let i=1;i<d.y.length;i++){ if (d.y[i] > d.y[peakIdx]) peakIdx = i; }
+  flightMap = { scale, ox, oy, maxX, maxY, peakIdx, lastIdx: d.x.length - 1 };
+}
+
+/* 발사 전 대기 장면 */
+function drawIdleScene(){
+  const W = sceneCv.width, H = sceneCv.height, gY = groundY();
+  sctx.fillStyle = '#9bd2ff'; sctx.fillRect(0,0,W,H);
+  sctx.fillStyle = '#1d3a26'; sctx.fillRect(0,gY,W,H-gY);
+  sctx.strokeStyle = '#2e5c3c'; sctx.beginPath(); sctx.moveTo(0,gY); sctx.lineTo(W,gY); sctx.stroke();
+
+  // 발사대 + 발사각으로 기운 로켓
+  sctx.fillStyle = '#33425c'; sctx.fillRect(ORIGIN_X-3, gY-14, 4, 14);
+  const ang = -CONFIG.LAUNCH_ANGLE_DEG * Math.PI/180;
+  drawRocketShape(sctx, ORIGIN_X, gY-6, 58, ang);
+
+  // 안내 텍스트
+  sctx.fillStyle = '#0a2238'; sctx.font = 'bold 13px sans-serif'; sctx.textAlign = 'left';
+  sctx.fillText(`발사각 ${CONFIG.LAUNCH_ANGLE_DEG}° · 압력 ${CONFIG.PRESSURE_ATM} atm · 물 ${(state.waterVolume*1000).toFixed(2)} L`, 185, 24);
+  sctx.fillStyle = '#0a2238'; sctx.font = '12px sans-serif';
+  sctx.fillText('🚀 발사 준비 완료 — [발사!] 버튼을 누르세요', 185, 44);
+
+  const ts = currentTankState();
+  drawTankInset(sctx, TANK_BOX, ts.P, ts.T, state.waterVolume);
+}
+
+/* 비행 장면 (발사 중/후) */
+function drawFlight(d, idx){
+  const W = sceneCv.width, H = sceneCv.height, m = flightMap;
+  sctx.fillStyle = '#9bd2ff'; sctx.fillRect(0,0,W,H);
+  sctx.fillStyle = '#1d3a26'; sctx.fillRect(0,m.oy,W,H-m.oy);
+  sctx.strokeStyle = '#2e5c3c'; sctx.beginPath(); sctx.moveTo(0,m.oy); sctx.lineTo(W,m.oy); sctx.stroke();
+  sctx.fillStyle = '#33425c'; sctx.fillRect(m.ox-3, m.oy-14, 4, 14);
+
+  // ── 고정 좌표 격자 (v2) ──────────────────────────────────────────
+  // 격자는 발사 데이터가 아니라 "화면(고정 배율)"을 기준으로 그린다.
+  // → 발사마다 격자선이 같은 픽셀에 고정되고, 로켓이 그 위를 지나간다.
+  const plotR = W - 20;                       // 격자 오른쪽 끝 (캔버스 고정)
+  const plotT = 26;                           // 격자 위쪽 끝 (캔버스 고정)
+  const gridMaxX = (plotR - m.ox) / FIXED_SCALE;   // 화면에 보이는 최대 x (m, 상수)
+  const gridMaxY = (m.oy - plotT) / FIXED_SCALE;   // 화면에 보이는 최대 y (m, 상수)
+  const stepX = niceStep(gridMaxX, 6), stepY = niceStep(gridMaxY, 5);  // 간격 상수
+  sctx.lineWidth = 1; sctx.font = '10px sans-serif';
+  // 세로 기준선 + X 눈금(지면 아래 라벨)
+  sctx.textAlign = 'center'; sctx.textBaseline = 'top';
+  for (let xm = stepX; xm <= gridMaxX + 1e-6; xm += stepX){
+    const px = m.ox + xm*FIXED_SCALE;
+    sctx.strokeStyle = 'rgba(10,34,56,0.10)';
+    sctx.beginPath(); sctx.moveTo(px, m.oy); sctx.lineTo(px, plotT); sctx.stroke();
+    sctx.strokeStyle = 'rgba(10,34,56,0.30)';
+    sctx.beginPath(); sctx.moveTo(px, m.oy); sctx.lineTo(px, m.oy+4); sctx.stroke();
+    sctx.fillStyle = 'rgba(10,34,56,0.45)';
+    sctx.fillText(`${Math.round(xm)} m`, px, m.oy+5);
+  }
+  // 가로 격자선 + Y 눈금(축 안쪽 라벨 — 좌하단 연료통 인셋과 겹치지 않게)
+  sctx.textAlign = 'left'; sctx.textBaseline = 'bottom';
+  for (let ym = stepY; ym <= gridMaxY + 1e-6; ym += stepY){
+    const py = m.oy - ym*FIXED_SCALE;
+    sctx.strokeStyle = 'rgba(10,34,56,0.10)';
+    sctx.beginPath(); sctx.moveTo(m.ox, py); sctx.lineTo(plotR, py); sctx.stroke();
+    sctx.strokeStyle = 'rgba(10,34,56,0.30)';
+    sctx.beginPath(); sctx.moveTo(m.ox-4, py); sctx.lineTo(m.ox, py); sctx.stroke();
+    sctx.fillStyle = 'rgba(10,34,56,0.45)';
+    sctx.fillText(`${Math.round(ym)} m`, m.ox+3, py-1);
+  }
+  sctx.textBaseline = 'alphabetic';
+
+  // 지나온 궤적
+  sctx.strokeStyle = 'rgba(255,112,67,0.65)'; sctx.lineWidth = 2; sctx.beginPath();
+  for (let i=0;i<=idx;i++){
+    const cx = m.ox + d.x[i]*m.scale, cy = m.oy - d.y[i]*m.scale;
+    if (i===0) sctx.moveTo(cx,cy); else sctx.lineTo(cx,cy);
+  }
+  sctx.stroke();
+
+  // 현재 로켓 위치 + 방향
+  const cx = m.ox + d.x[idx]*m.scale, cy = m.oy - d.y[idx]*m.scale;
+  let ang;
+  if (idx>0){
+    const dx = d.x[idx]-d.x[idx-1], dy = d.y[idx]-d.y[idx-1];
+    ang = Math.atan2(-dy, dx);
+  } else {
+    ang = -CONFIG.LAUNCH_ANGLE_DEG * Math.PI/180;
+  }
+  drawRocketShape(sctx, cx, cy, 40, ang);
+
+  // 물 분출 (추력 중)
+  if (d.waterVol[idx] > 1e-9 && idx < lastSim.thrustEndIdx){
+    sctx.strokeStyle = 'rgba(120,200,255,0.85)'; sctx.lineWidth = 3;
+    for (let k=0;k<6;k++){
+      const back = ang + Math.PI;
+      const sx = cx + Math.cos(back)*(8+k*5), sy = cy - Math.sin(back)*(8+k*5);
+      sctx.beginPath(); sctx.arc(sx+(Math.random()-0.5)*6, sy+(Math.random()-0.5)*6, 2.5,0,Math.PI*2); sctx.stroke();
+    }
+  }
+
+  // 최고점 / 착지점 표시
+  sctx.font = '11px sans-serif'; sctx.textBaseline = 'alphabetic';
+  const pk = m.peakIdx, lz = m.lastIdx;
+  const pkx = m.ox + d.x[pk]*m.scale, pky = m.oy - d.y[pk]*m.scale;
+  sctx.fillStyle = '#e53935';
+  sctx.beginPath(); sctx.arc(pkx, pky, 3, 0, Math.PI*2); sctx.fill();
+  sctx.textAlign = 'center';
+  sctx.fillText(`최고점 ${d.y[pk].toFixed(1)} m`, pkx, pky-7);
+  const ldx = m.ox + d.x[lz]*m.scale, ldy = m.oy - d.y[lz]*m.scale;
+  sctx.fillStyle = '#1565c0';
+  sctx.beginPath(); sctx.arc(ldx, ldy, 3, 0, Math.PI*2); sctx.fill();
+  sctx.textAlign = 'right';
+  sctx.fillText(`착지 ${d.x[lz].toFixed(1)} m`, ldx, ldy-7);
+
+  // 현재 수치 (좌상단)
+  sctx.fillStyle = '#0a2238'; sctx.font = 'bold 12px sans-serif'; sctx.textAlign = 'left';
+  sctx.fillText(`수평거리 ${d.x[idx].toFixed(1)} m · 높이 ${d.y[idx].toFixed(1)} m · 속력 ${d.speed[idx].toFixed(1)} m/s`, 185, 22);
+
+  // 연료통 내부 뷰 (좌측 하단)
+  drawTankInset(sctx, TANK_BOX, d.P[idx], d.T[idx], d.waterVol[idx]);
+}
+
+/* =====================================================================
+   애니메이션 루프
+   ===================================================================== */
+let mode = 'idle';        // 'idle' | 'flight'
+let lastSim = null;
+let flightStart = 0;
+const PLAY_TOTAL = 3.2;   // 전체 비행 재생 시간 (s) — 사전 동작/가압 지연 없이 즉시 이동
+
+function loop(ts){
+  if (mode === 'idle'){
+    drawIdleScene();
+  } else if (mode === 'flight'){
+    const d = lastSim.d;
+    const lastIdx = d.t.length - 1;
+    const elapsed = (ts - flightStart)/1000;
+    // 발사 즉시(클릭 후 첫 프레임)부터 로켓이 이동 — Math.ceil로 idx>=1 보장
+    let idx = Math.ceil((elapsed/PLAY_TOTAL) * lastIdx);
+    idx = Math.max(0, Math.min(lastIdx, idx));
+    drawFlight(d, idx);
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* =====================================================================
+   그래프 (Chart.js)
+   ===================================================================== */
+let chart = null;
+let currentChart = 'rangeWater';
+
+function sample(d, key){
+  const N = d.t.length, M = 160;
+  const step = Math.max(1, Math.floor(N/M));
+  const out=[];
+  for (let i=0;i<N;i+=step) out.push({ x: d.t[i], y: d[key][i] });
+  if (N>0) out.push({ x:d.t[N-1], y:d[key][N-1] });
+  return out;
+}
+function sampleXY(d, xKey, yKey, fx, fy){
+  const N=d.t.length, M=160, step=Math.max(1,Math.floor(N/M));
+  const out=[];
+  for (let i=0;i<N;i+=step) out.push({ x: fx(d[xKey][i]), y: fy(d[yKey][i]) });
+  if (N>0) out.push({ x: fx(d[xKey][N-1]), y: fy(d[yKey][N-1]) });
+  return out;
+}
+
+const CHART_DEF = {
+  // 속도-시간: vx(수평)·vy(연직) 두 성분으로 분리 (v2)
+  speed: { title:'속도(성분)-시간', xl:'시간 (s)', yl:'속도 (m/s)',
+           lines: [
+             { label:'vx', key:'vx', color:'#4fc3f7', dash:[] },      // 수평 — 파랑 실선
+             { label:'vy', key:'vy', color:'#ff7043', dash:[7,4] },   // 연직 — 주황 점선
+           ] },
+  accel: { title:'가속도-시간', xl:'시간 (s)', yl:'가속도 (m/s²)', color:'#ffd54f',
+           data: d => sample(d,'accel') },
+  dist:  { title:'거리-시간', xl:'시간 (s)', yl:'발사점으로부터 거리 (m)', color:'#66bb6a',
+           data: d => { const a=[]; const N=d.t.length, step=Math.max(1,Math.floor(N/160));
+                        for(let i=0;i<N;i+=step) a.push({x:d.t[i], y:Math.hypot(d.x[i],d.y[i])});
+                        if(N>0) a.push({x:d.t[N-1], y:Math.hypot(d.x[N-1],d.y[N-1])}); return a; } },
+  pt:    { title:'압력-온도', xl:'온도 (°C)', yl:'압력 (atm)', color:'#ff7043',
+           data: d => sampleXY(d,'T','P', T=>T-273.15, P=>P/CONFIG.Patm) },
+  traj:  { title:'궤적 (y-x)', xl:'수평거리 x (m)', yl:'높이 y (m)', color:'#ce93d8',
+           data: d => sampleXY(d,'x','y', x=>x, y=>y) },
+};
+
+const COMMON_SCALE = (xl, yl) => ({
+  x:{ type:'linear', title:{display:true, text:xl, color:'#9fb2cc'},
+      grid:{color:'#22324d'}, ticks:{color:'#9fb2cc'} },
+  y:{ title:{display:true, text:yl, color:'#9fb2cc'},
+      grid:{color:'#22324d'}, ticks:{color:'#9fb2cc'}, beginAtZero:true },
+});
+
+/* 핵심 학습 그래프: 수평거리 vs 물의 양 (발사할 때마다 점이 쌓임) */
+function renderRangeWaterChart(){
+  const pts = results.map(r=>({ x:r.waterL, y:r.rangeM })).sort((a,b)=>a.x-b.x);
+  const datasets = [{
+    label:'수평 이동거리 vs 물의 양', data: pts,
+    borderColor:'#4fc3f7', backgroundColor:'#4fc3f7',
+    showLine:true, pointRadius:5, pointHoverRadius:8, borderWidth:2.5, tension:0.25,
+  }];
+  const cfg = {
+    type:'line',
+    data:{ datasets },
+    options:{
+      responsive:true, maintainAspectRatio:false, animation:false, parsing:false,
+      plugins:{ legend:{ display:true, labels:{color:'#9fb2cc', font:{size:11}} } },
+      scales: COMMON_SCALE('물의 양 (L)', '수평 이동거리 (m)'),
+    }
+  };
+  cfg.options.scales.x.min = 0; cfg.options.scales.x.max = CONFIG.tankVolume*1000;
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById('chart'), cfg);
+}
+
+/* 발사할 때마다 곡선이 누적(겹쳐) 표시된다 (v2).
+   - history 의 마지막 항목 = 가장 최근 발사 → '현재 발사'로 강조(굵은 실선/고유색)
+   - 그 이전 항목들 = 발사별 고유색으로 흐리게 점선 겹침 ('발사 N' 범례)
+   - 겹쳐보기 체크 해제 시 현재 발사만 표시 */
+function renderChart(){
+  if (currentChart === 'rangeWater'){ renderRangeWaterChart(); return; }
+
+  const def = CHART_DEF[currentChart];
+  const datasets = [];
+  const showHist = document.getElementById('overlay').checked;
+  const n = history.length;
+
+  history.forEach((h, hi)=>{
+    const isCurrent = hi === n - 1;          // 마지막 = 가장 최근 발사
+    if (!isCurrent && !showHist) return;     // 겹쳐보기 OFF면 이전 발사 생략
+
+    if (def.lines){
+      // 속도 성분(vx·vy): 현재 발사는 vx=파랑실선 / vy=주황점선, 이전 발사는 발사색으로 흐리게
+      def.lines.forEach(ln=>{
+        datasets.push({
+          label: isCurrent ? ln.label : `${h.label} ${ln.label}`,
+          data: sample(h.d, ln.key),
+          borderColor: isCurrent ? ln.color : h.color,
+          borderWidth: isCurrent ? 2.5 : 1.2,
+          borderDash: isCurrent ? ln.dash : (ln.key==='vy' ? [7,4] : [2,3]),
+          pointRadius:0, showLine:true, tension:0.15,
+        });
+      });
+    } else {
+      // 단일 곡선 차트: 현재 발사는 기본색 실선, 이전 발사는 발사색 점선
+      datasets.push({
+        label: isCurrent ? def.title : h.label,
+        data: def.data(h.d),
+        borderColor: isCurrent ? def.color : h.color,
+        backgroundColor: isCurrent ? def.color : h.color,
+        borderWidth: isCurrent ? 2.5 : 1.4,
+        borderDash: isCurrent ? [] : [5,4],
+        pointRadius:0, showLine:true, tension:0.15,
+      });
+    }
+  });
+
+  const cfg = {
+    type:'line',
+    data:{ datasets },
+    options:{
+      responsive:true, maintainAspectRatio:false, animation:false, parsing:false,
+      plugins:{ legend:{ display: datasets.length>0, labels:{color:'#9fb2cc', font:{size:10}} } },
+      scales: COMMON_SCALE(def.xl, def.yl),
+    }
+  };
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById('chart'), cfg);
+}
+
+/* =====================================================================
+   발사 기록 표
+   ===================================================================== */
+function updateResultsTable(){
+  const body = document.getElementById('resultsBody');
+  if (results.length === 0){
+    body.innerHTML = '<tr><td colspan="3" style="color:#9fb2cc;text-align:center;padding:10px;">아직 발사 기록이 없어요</td></tr>';
+    return;
+  }
+  const maxR = Math.max(...results.map(r=>r.rangeM));
+  body.innerHTML = results.map((r,i)=>{
+    const best = r.rangeM === maxR && maxR > 0;
+    return `<tr${best?' class="best"':''}>`
+         + `<td>${i+1}</td>`
+         + `<td>${r.waterL.toFixed(2)} L</td>`
+         + `<td>${r.rangeM.toFixed(1)} m${best?' 🏆':''}</td></tr>`;
+  }).join('');
+}
+
+/* =====================================================================
+   압력 상태 메시지 (경고 / 파열)
+   ===================================================================== */
+function updateStatus(){
+  const statusEl = document.getElementById('statusMsg');
+  const atm = CONFIG.PRESSURE_ATM;
+  if (state.burst){
+    statusEl.className = 'statusMsg burst';
+    statusEl.textContent = '💥 펑! 압력이 너무 높았어요. 초기화 후 다시 시도하세요.';
+  } else if (atm > CONFIG.BURST_PRESSURE_ATM){
+    statusEl.className = 'statusMsg burst';
+    statusEl.textContent = `💥 ${CONFIG.BURST_PRESSURE_ATM} atm을 넘었어요! 연료통이 터집니다.`;
+  } else if (atm >= CONFIG.WARNING_PRESSURE_ATM){
+    statusEl.className = 'statusMsg warn';
+    statusEl.textContent = `⚠️ 위험! ${CONFIG.BURST_PRESSURE_ATM} atm을 넘으면 연료통이 터져요!`;
+  } else {
+    statusEl.className = 'statusMsg';
+    statusEl.textContent = '';
+  }
+}
+
+/* 고정값 표시 갱신 (헤더 옆 안내) */
+function refreshFixedLabels(){
+  document.getElementById('fixAngle').textContent = CONFIG.LAUNCH_ANGLE_DEG;
+  document.getElementById('fixPressure').textContent = CONFIG.PRESSURE_ATM;
+  document.getElementById('fixPressure2').textContent = CONFIG.PRESSURE_ATM;
+}
+
+/* =====================================================================
+   UI 이벤트
+   ===================================================================== */
+// 물의 양 (주 조작변인)
+document.getElementById('water').addEventListener('input', e=>{
+  const L = parseFloat(e.target.value);
+  state.waterVolume = L/1000;
+  document.getElementById('waterVal').textContent = L.toFixed(2);
+});
+
+// 고급 옵션 — 발사각
+document.getElementById('cfg_angle').addEventListener('input', e=>{
+  let v = parseFloat(e.target.value);
+  if (isNaN(v)) return;
+  v = clamp(v, 0, 90);
+  CONFIG.LAUNCH_ANGLE_DEG = v;
+  refreshFixedLabels();
+});
+// 고급 옵션 — 압력 (5 atm 경고 / 6 atm 초과 파열)
+document.getElementById('cfg_pressure').addEventListener('input', e=>{
+  const v = parseFloat(e.target.value);
+  if (isNaN(v)) return;
+  CONFIG.PRESSURE_ATM = v;
+  refreshFixedLabels();
+  if (v > CONFIG.BURST_PRESSURE_ATM && !state.burst) triggerBurst();
+  updateStatus();
+});
+// 고급 옵션 — 통제변인
+function bindCfg(id, fn){ document.getElementById(id).addEventListener('input', e=>{ const v=parseFloat(e.target.value); if(!isNaN(v)) fn(v); }); }
+bindCfg('cfg_g',   v=> CONFIG.g = v);
+bindCfg('cfg_mass',v=> CONFIG.emptyMass = v);
+bindCfg('cfg_tank',v=>{
+  CONFIG.tankVolume = v/1000;
+  const w = document.getElementById('water'); w.max = v;
+  if (state.waterVolume > CONFIG.tankVolume){
+    state.waterVolume = CONFIG.tankVolume*0.9;
+    w.value = (state.waterVolume*1000).toFixed(2);
+    document.getElementById('waterVal').textContent = (state.waterVolume*1000).toFixed(2);
+  }
+});
+bindCfg('cfg_temp',v=> CONFIG.ambientT = v + 273.15);
+bindCfg('cfg_patm',v=> CONFIG.Patm = v * 101325);
+
+// 발사
+const launchBtn = document.getElementById('launchBtn');
+const histColors = ['#ce93d8','#80cbc4','#ffab91','#90caf9','#fff59d','#a5d6a7','#f48fb1'];
+launchBtn.addEventListener('click', ()=>{
+  if (state.burst){ alert('연료통이 터졌어요. 초기화 후 다시 시도하세요.'); return; }
+  // 물을 가득 채우면(공기 없음) 발사 불가
+  if (state.waterVolume >= CONFIG.tankVolume - 1e-9){
+    alert('물을 탱크 가득 채우면 압축할 공기가 없어 발사할 수 없어요!\n물의 양을 줄여보세요. (예: 0.6 L)');
+    return;
+  }
+
+  lastSim = simulate();
+  const rangeM = lastSim.rangeM;
+  setupFlightMap(lastSim.d);
+
+  // 수평 이동거리 결과 강조
+  document.getElementById('rangeReadout').textContent = rangeM.toFixed(1) + ' m';
+  document.getElementById('rangeSub').textContent =
+    `물 ${(state.waterVolume*1000).toFixed(2)} L · 발사각 ${CONFIG.LAUNCH_ANGLE_DEG}° · ${CONFIG.PRESSURE_ATM} atm`;
+
+  // 기록 (표 + 핵심 그래프)
+  results.push({ waterL: state.waterVolume*1000, rangeM });
+  updateResultsTable();
+
+  // 발사 기록 (겹쳐보기) — 전체 시계열 d 를 보관해 모든 그래프에 누적
+  const dd = lastSim.d;
+  const launchNo = history.length + 1;
+  history.push({
+    label: `발사 ${launchNo}`,
+    d: dd,
+    color: histColors[history.length % histColors.length],
+    traj: sampleXY(dd,'x','y',x=>x,y=>y),
+  });
+
+  // 콘솔 한 줄 요약 (발사별)
+  const peakM = Math.max(...dd.y), maxSpeed = Math.max(...dd.speed);
+  console.log(
+    `🚀 발사 ${launchNo}: 물 ${(state.waterVolume*1000).toFixed(2)}L · 발사각 ${CONFIG.LAUNCH_ANGLE_DEG}° · `
+    + `최고점 ${peakM.toFixed(1)}m · 수평거리 ${rangeM.toFixed(1)}m · 최고속력 ${maxSpeed.toFixed(1)}m/s`
+  );
+
+  flightStart = performance.now();
+  mode = 'flight';
+  renderChart();
+});
+
+// 초기화 — 고정값(45°, 3atm) 복원 + 파열 해제. 기록(표/그래프)은 유지.
+document.getElementById('resetBtn').addEventListener('click', ()=>{
+  state.burst = false;
+  CONFIG.LAUNCH_ANGLE_DEG = 45;
+  CONFIG.PRESSURE_ATM = 3;
+  document.getElementById('cfg_angle').value = 45;
+  document.getElementById('cfg_pressure').value = 3;
+  burstFragments = [];
+  burstStart = 0;
+  mode = 'idle';
+  lastSim = null;
+  flightMap = null;
+  MOL.list = [];
+  setControlsDisabled(false);
+  refreshFixedLabels();
+  updateStatus();
+  renderChart();
+});
+
+// 기록 지우기 (표 + 핵심 그래프 데이터)
+document.getElementById('clearResults').addEventListener('click', ()=>{
+  results = [];
+  document.getElementById('rangeReadout').textContent = '— m';
+  document.getElementById('rangeSub').textContent = '발사하면 이곳에 결과가 표시돼요';
+  updateResultsTable();
+  renderChart();
+});
+
+// 겹침 지우기 — 이전 발사 곡선만 지우고 가장 최근 발사는 남긴다
+document.getElementById('clearHist').addEventListener('click', ()=>{ history = history.slice(-1); renderChart(); });
+document.getElementById('overlay').addEventListener('change', renderChart);
+
+// 그래프 탭
+document.querySelectorAll('#tabs button').forEach(b=>{
+  b.addEventListener('click', ()=>{
+    document.querySelectorAll('#tabs button').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    currentChart = b.dataset.chart;
+    renderChart();
+  });
+});
+
+// 초기 표시
+refreshFixedLabels();
+updateStatus();
+updateResultsTable();
+renderChart();
+</script>
+</body>
+</html>
