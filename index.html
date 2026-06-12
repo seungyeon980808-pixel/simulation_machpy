@@ -2,12 +2,19 @@
 <!--
   물로켓 시뮬레이션 (Water Rocket Simulation)
   중학교 과학 수업용 - 통제된 실험: '물의 양'만 바꾸고 '수평 이동거리'를 관찰
-  v1.3.1
+  v2.0.0
   단일 파일 (HTML + CSS + JS 인라인). 빌드 과정 없음.
   애니메이션: Canvas 2D / 그래프: Chart.js (CDN)
 
   핵심 목표: 발사각(45°)·압력(3atm)은 고정. 오직 물의 양만 조작변인.
              발사할 때마다 (물의 양 → 수평 이동거리)를 기록해 비교한다.
+
+  v2 변경점:
+    1) 비행 장면 격자를 "고정 좌표 격자"로 변경 — 발사마다 배율이 바뀌지 않고
+       공간에 고정된 격자 위로 로켓이 지나간다 (발사 간 크기 비교 가능).
+    2) '속도-시간' 그래프를 vx(수평)·vy(연직) 두 성분으로 분리 표시.
+    3) 발사할 때마다 모든 시계열 그래프에 이전 발사 곡선이 누적(겹쳐) 표시
+       — 발사별 고유 색 + '발사 N' 범례. (지우기 전까지 사라지지 않음)
 -->
 <html lang="ko">
 <head>
@@ -185,7 +192,7 @@
     <h2 class="section">그래프</h2>
     <div class="tabs" id="tabs">
       <button data-chart="rangeWater" class="key active">★ 수평거리-물의양</button>
-      <button data-chart="speed">속도-시간</button>
+      <button data-chart="speed">속도 vx·vy-시간</button>
       <button data-chart="accel">가속도-시간</button>
       <button data-chart="dist">거리-시간</button>
       <button data-chart="pt">압력-온도</button>
@@ -193,8 +200,8 @@
     </div>
     <div class="chartbox"><canvas id="chart"></canvas></div>
     <div class="overlay-ctrl">
-      <input type="checkbox" id="overlay" />
-      <label for="overlay" style="margin:0;">이전 발사 궤적 겹쳐보기 (궤적 그래프)</label>
+      <input type="checkbox" id="overlay" checked />
+      <label for="overlay" style="margin:0;">이전 발사 곡선 겹쳐보기 (모든 그래프)</label>
       <button class="secondary" id="clearHist" style="flex:0 0 auto; padding:4px 8px; font-size:11px;">겹침 지우기</button>
     </div>
 
@@ -312,9 +319,10 @@ function simulate(){
   const theta = CONFIG.LAUNCH_ANGLE_DEG * Math.PI / 180;
   let x = 0, y = 0, vx = 0, vy = 0, t = 0;
 
-  const d = { t:[], speed:[], accel:[], x:[], y:[], P:[], T:[], waterVol:[] };
+  const d = { t:[], speed:[], vx:[], vy:[], accel:[], x:[], y:[], P:[], T:[], waterVol:[] };
   function rec(accelMag){
     d.t.push(t); d.speed.push(Math.hypot(vx, vy)); d.accel.push(accelMag);
+    d.vx.push(vx); d.vy.push(vy);                 // 속도 성분 분리 기록 (그래프용)
     d.x.push(x); d.y.push(y); d.P.push(P); d.T.push(T); d.waterVol.push(waterVol);
   }
 
@@ -547,6 +555,17 @@ function drawRocketShape(ctx, cx, cy, len, ang){
 const ORIGIN_X = 185;      // 발사점 픽셀 x (연료통 인셋 오른쪽)
 function groundY(){ return sceneCv.height - 40; }
 
+/* ── 고정 좌표 격자 (v2) ──────────────────────────────────────────────
+   배율을 발사마다 바꾸지 않고 "픽셀/미터"를 상수로 고정한다.
+   → 격자선은 항상 같은 픽셀 위치에 그려져 공간에 고정되고,
+     로켓은 그 위를 지나간다. 발사 간 도달 거리를 눈으로 비교할 수 있다.
+   기준 가시 범위(REF_X·REF_Y)가 화면에 들어오도록 배율을 한 번만 계산한다. */
+const GRID_REF_X = 90, GRID_REF_Y = 70;   // 화면에 담을 기준 범위 (m)
+const FIXED_SCALE = Math.min(
+  (sceneCv.width - ORIGIN_X - 20) / GRID_REF_X,   // 가로 가용폭
+  (groundY() - 26) / GRID_REF_Y                   // 세로 가용높이
+);
+
 /* 눈금 간격을 1·2·5×10ⁿ 형태의 "보기 좋은" 값으로 선택 */
 function niceStep(max, divisions){
   const raw = max / Math.max(1, divisions);
@@ -559,13 +578,11 @@ function niceStep(max, divisions){
 
 let flightMap = null;      // {scale, ox, oy, maxX, maxY, peakIdx, lastIdx}
 function setupFlightMap(d){
-  const W = sceneCv.width;
   const ox = ORIGIN_X, oy = groundY();
   const maxX = Math.max(1, ...d.x);
   const maxY = Math.max(1, ...d.y);
-  const usableW = W - ox - 20;
-  const usableH = oy - 26;
-  const scale = Math.min(usableW/maxX, usableH/maxY);
+  // 배율은 고정 (발사마다 달라지지 않음) — 격자가 공간에 고정된다.
+  const scale = FIXED_SCALE;
   // 최고점(최대 높이) 인덱스
   let peakIdx = 0;
   for (let i=1;i<d.y.length;i++){ if (d.y[i] > d.y[peakIdx]) peakIdx = i; }
@@ -602,15 +619,19 @@ function drawFlight(d, idx){
   sctx.strokeStyle = '#2e5c3c'; sctx.beginPath(); sctx.moveTo(0,m.oy); sctx.lineTo(W,m.oy); sctx.stroke();
   sctx.fillStyle = '#33425c'; sctx.fillRect(m.ox-3, m.oy-14, 4, 14);
 
-  // 위치 눈금(격자) — X: 0~최대 수평거리, Y: 0~최대 높이 (m 단위)
-  const plotR = m.ox + m.maxX*m.scale;   // 격자 오른쪽 끝
-  const plotT = m.oy - m.maxY*m.scale;   // 격자 위쪽 끝
-  const stepX = niceStep(m.maxX, 6), stepY = niceStep(m.maxY, 5);
+  // ── 고정 좌표 격자 (v2) ──────────────────────────────────────────
+  // 격자는 발사 데이터가 아니라 "화면(고정 배율)"을 기준으로 그린다.
+  // → 발사마다 격자선이 같은 픽셀에 고정되고, 로켓이 그 위를 지나간다.
+  const plotR = W - 20;                       // 격자 오른쪽 끝 (캔버스 고정)
+  const plotT = 26;                           // 격자 위쪽 끝 (캔버스 고정)
+  const gridMaxX = (plotR - m.ox) / FIXED_SCALE;   // 화면에 보이는 최대 x (m, 상수)
+  const gridMaxY = (m.oy - plotT) / FIXED_SCALE;   // 화면에 보이는 최대 y (m, 상수)
+  const stepX = niceStep(gridMaxX, 6), stepY = niceStep(gridMaxY, 5);  // 간격 상수
   sctx.lineWidth = 1; sctx.font = '10px sans-serif';
-  // 세로 격자선 + X 눈금(지면 아래 라벨)
+  // 세로 기준선 + X 눈금(지면 아래 라벨)
   sctx.textAlign = 'center'; sctx.textBaseline = 'top';
-  for (let xm = stepX; xm <= m.maxX + 1e-6; xm += stepX){
-    const px = m.ox + xm*m.scale;
+  for (let xm = stepX; xm <= gridMaxX + 1e-6; xm += stepX){
+    const px = m.ox + xm*FIXED_SCALE;
     sctx.strokeStyle = 'rgba(10,34,56,0.10)';
     sctx.beginPath(); sctx.moveTo(px, m.oy); sctx.lineTo(px, plotT); sctx.stroke();
     sctx.strokeStyle = 'rgba(10,34,56,0.30)';
@@ -620,8 +641,8 @@ function drawFlight(d, idx){
   }
   // 가로 격자선 + Y 눈금(축 안쪽 라벨 — 좌하단 연료통 인셋과 겹치지 않게)
   sctx.textAlign = 'left'; sctx.textBaseline = 'bottom';
-  for (let ym = stepY; ym <= m.maxY + 1e-6; ym += stepY){
-    const py = m.oy - ym*m.scale;
+  for (let ym = stepY; ym <= gridMaxY + 1e-6; ym += stepY){
+    const py = m.oy - ym*FIXED_SCALE;
     sctx.strokeStyle = 'rgba(10,34,56,0.10)';
     sctx.beginPath(); sctx.moveTo(m.ox, py); sctx.lineTo(plotR, py); sctx.stroke();
     sctx.strokeStyle = 'rgba(10,34,56,0.30)';
@@ -729,8 +750,12 @@ function sampleXY(d, xKey, yKey, fx, fy){
 }
 
 const CHART_DEF = {
-  speed: { title:'속도-시간', xl:'시간 (s)', yl:'속력 (m/s)', color:'#4fc3f7',
-           data: d => sample(d,'speed') },
+  // 속도-시간: vx(수평)·vy(연직) 두 성분으로 분리 (v2)
+  speed: { title:'속도(성분)-시간', xl:'시간 (s)', yl:'속도 (m/s)',
+           lines: [
+             { label:'vx', key:'vx', color:'#4fc3f7', dash:[] },      // 수평 — 파랑 실선
+             { label:'vy', key:'vy', color:'#ff7043', dash:[7,4] },   // 연직 — 주황 점선
+           ] },
   accel: { title:'가속도-시간', xl:'시간 (s)', yl:'가속도 (m/s²)', color:'#ffd54f',
            data: d => sample(d,'accel') },
   dist:  { title:'거리-시간', xl:'시간 (s)', yl:'발사점으로부터 거리 (m)', color:'#66bb6a',
@@ -772,35 +797,54 @@ function renderRangeWaterChart(){
   chart = new Chart(document.getElementById('chart'), cfg);
 }
 
+/* 발사할 때마다 곡선이 누적(겹쳐) 표시된다 (v2).
+   - history 의 마지막 항목 = 가장 최근 발사 → '현재 발사'로 강조(굵은 실선/고유색)
+   - 그 이전 항목들 = 발사별 고유색으로 흐리게 점선 겹침 ('발사 N' 범례)
+   - 겹쳐보기 체크 해제 시 현재 발사만 표시 */
 function renderChart(){
   if (currentChart === 'rangeWater'){ renderRangeWaterChart(); return; }
 
   const def = CHART_DEF[currentChart];
   const datasets = [];
+  const showHist = document.getElementById('overlay').checked;
+  const n = history.length;
 
-  // 이전 발사 겹쳐보기 (궤적일 때만)
-  if (currentChart==='traj' && document.getElementById('overlay').checked){
-    history.forEach(h=>{
-      datasets.push({
-        label: h.label, data: h.traj, borderColor: h.color,
-        borderWidth:1.5, borderDash:[5,4], pointRadius:0, showLine:true,
+  history.forEach((h, hi)=>{
+    const isCurrent = hi === n - 1;          // 마지막 = 가장 최근 발사
+    if (!isCurrent && !showHist) return;     // 겹쳐보기 OFF면 이전 발사 생략
+
+    if (def.lines){
+      // 속도 성분(vx·vy): 현재 발사는 vx=파랑실선 / vy=주황점선, 이전 발사는 발사색으로 흐리게
+      def.lines.forEach(ln=>{
+        datasets.push({
+          label: isCurrent ? ln.label : `${h.label} ${ln.label}`,
+          data: sample(h.d, ln.key),
+          borderColor: isCurrent ? ln.color : h.color,
+          borderWidth: isCurrent ? 2.5 : 1.2,
+          borderDash: isCurrent ? ln.dash : (ln.key==='vy' ? [7,4] : [2,3]),
+          pointRadius:0, showLine:true, tension:0.15,
+        });
       });
-    });
-  }
-
-  if (lastSim){
-    datasets.push({
-      label: def.title, data: def.data(lastSim.d), borderColor: def.color,
-      backgroundColor: def.color, borderWidth:2.5, pointRadius:0, showLine:true, tension:0.15,
-    });
-  }
+    } else {
+      // 단일 곡선 차트: 현재 발사는 기본색 실선, 이전 발사는 발사색 점선
+      datasets.push({
+        label: isCurrent ? def.title : h.label,
+        data: def.data(h.d),
+        borderColor: isCurrent ? def.color : h.color,
+        backgroundColor: isCurrent ? def.color : h.color,
+        borderWidth: isCurrent ? 2.5 : 1.4,
+        borderDash: isCurrent ? [] : [5,4],
+        pointRadius:0, showLine:true, tension:0.15,
+      });
+    }
+  });
 
   const cfg = {
     type:'line',
     data:{ datasets },
     options:{
       responsive:true, maintainAspectRatio:false, animation:false, parsing:false,
-      plugins:{ legend:{ display: currentChart==='traj' && history.length>0, labels:{color:'#9fb2cc', font:{size:10}} } },
+      plugins:{ legend:{ display: datasets.length>0, labels:{color:'#9fb2cc', font:{size:10}} } },
       scales: COMMON_SCALE(def.xl, def.yl),
     }
   };
@@ -922,10 +966,22 @@ launchBtn.addEventListener('click', ()=>{
   results.push({ waterL: state.waterVolume*1000, rangeM });
   updateResultsTable();
 
-  // 궤적 기록 (겹쳐보기)
-  const traj = sampleXY(lastSim.d,'x','y',x=>x,y=>y);
-  history.push({ label:`물 ${(state.waterVolume*1000).toFixed(2)}L → ${rangeM.toFixed(1)}m`,
-                 traj, color: histColors[history.length % histColors.length] });
+  // 발사 기록 (겹쳐보기) — 전체 시계열 d 를 보관해 모든 그래프에 누적
+  const dd = lastSim.d;
+  const launchNo = history.length + 1;
+  history.push({
+    label: `발사 ${launchNo}`,
+    d: dd,
+    color: histColors[history.length % histColors.length],
+    traj: sampleXY(dd,'x','y',x=>x,y=>y),
+  });
+
+  // 콘솔 한 줄 요약 (발사별)
+  const peakM = Math.max(...dd.y), maxSpeed = Math.max(...dd.speed);
+  console.log(
+    `🚀 발사 ${launchNo}: 물 ${(state.waterVolume*1000).toFixed(2)}L · 발사각 ${CONFIG.LAUNCH_ANGLE_DEG}° · `
+    + `최고점 ${peakM.toFixed(1)}m · 수평거리 ${rangeM.toFixed(1)}m · 최고속력 ${maxSpeed.toFixed(1)}m/s`
+  );
 
   flightStart = performance.now();
   mode = 'flight';
@@ -960,8 +1016,8 @@ document.getElementById('clearResults').addEventListener('click', ()=>{
   renderChart();
 });
 
-// 겹침 지우기 (궤적)
-document.getElementById('clearHist').addEventListener('click', ()=>{ history=[]; renderChart(); });
+// 겹침 지우기 — 이전 발사 곡선만 지우고 가장 최근 발사는 남긴다
+document.getElementById('clearHist').addEventListener('click', ()=>{ history = history.slice(-1); renderChart(); });
 document.getElementById('overlay').addEventListener('change', renderChart);
 
 // 그래프 탭
