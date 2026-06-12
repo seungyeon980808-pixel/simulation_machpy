@@ -410,6 +410,7 @@ function updateMolecules(P, T, bounds){
 const sceneCv = document.getElementById('sceneCanvas');
 const sctx = sceneCv.getContext('2d');
 let showTank = true;       // 연료통 표시 on/off (토글)
+let tankDragRect = null;   // 연료통 물높이 드래그 히트영역 (idle 때만 설정)
 // 좌측 하단 연료통 내부 뷰 영역 — 로켓 경로/거리 표시와 겹치지 않게
 const TANK_BOX = { x:12, y: sceneCv.height-152, w:152, h:140 };
 
@@ -460,6 +461,21 @@ function drawTankInset(ctx, box, P, T, waterVol){
   ctx.strokeStyle = inWarning ? '#ff5252' : '#5a7196'; ctx.lineWidth = inWarning ? 2 : 1.5;
   ctx.strokeRect(tx, ty, tw, th);
   ctx.fillStyle = '#5a7196'; ctx.fillRect(tx+tw/2-5, ty+th, 10, 6);
+
+  // 물 높이 드래그 핸들 — 발사 전(idle)에만 잡아서 물의 양을 조절할 수 있다
+  if (mode === 'idle'){
+    tankDragRect = { tx, ty, tw, th };
+    const surfaceY = ty + airH;          // 물 표면 = 핸들 위치
+    ctx.fillStyle = '#ffd54f'; ctx.strokeStyle = '#332700'; ctx.lineWidth = 1;
+    roundRect(ctx, tx-8, surfaceY-4, tw+16, 8, 3); ctx.fill(); ctx.stroke();
+    for (let i=-1;i<=1;i++){            // 그립 라인
+      ctx.beginPath(); ctx.moveTo(tx+tw/2+i*4, surfaceY-2); ctx.lineTo(tx+tw/2+i*4, surfaceY+2); ctx.stroke();
+    }
+    ctx.fillStyle = '#9fb2cc'; ctx.font = '9px sans-serif'; ctx.textAlign = 'left';
+    ctx.fillText('↕ 드래그', tx-8, surfaceY+16);
+  } else {
+    tankDragRect = null;
+  }
 
   // 수치 (패널 좌측)
   ctx.textAlign = 'left';
@@ -1003,11 +1019,50 @@ document.querySelectorAll('#tabs button').forEach(b=>{
 // 연료통 표시 on/off 토글
 document.getElementById('tankToggle').addEventListener('change', e=>{ showTank = e.target.checked; });
 
-// 스페이스바 = 발사 (입력란에 포커스가 있을 땐 제외)
+/* 물의 양 공통 설정 (드래그 · 화살표키가 슬라이더와 같은 상태를 바꾼다) */
+function setWaterFromL(L){
+  L = clamp(L, 0, CONFIG.tankVolume*1000);
+  L = Math.round(L*100)/100;                 // 슬라이더 step(0.05)에 맞춰 정리
+  state.waterVolume = L/1000;
+  document.getElementById('water').value = L;
+  document.getElementById('waterVal').textContent = L.toFixed(2);
+}
+
+/* 연료통 위젯에서 물 높이를 직접 드래그 — 발사 전(idle)에만 동작 */
+let draggingWater = false;
+function canvasPoint(e){
+  const r = sceneCv.getBoundingClientRect();
+  return { x:(e.clientX-r.left)*(sceneCv.width/r.width), y:(e.clientY-r.top)*(sceneCv.height/r.height) };
+}
+function waterLFromY(my){
+  const g = tankDragRect;
+  const frac = clamp(1 - (my - g.ty)/g.th, 0, 1);   // 표면이 높을수록 물이 많다
+  return frac * CONFIG.tankVolume * 1000;
+}
+sceneCv.addEventListener('mousedown', e=>{
+  if (mode !== 'idle' || !showTank || !tankDragRect) return;
+  const p = canvasPoint(e), g = tankDragRect;
+  if (p.x >= g.tx-10 && p.x <= g.tx+g.tw+10 && p.y >= g.ty-6 && p.y <= g.ty+g.th+6){
+    draggingWater = true;
+    setWaterFromL(waterLFromY(p.y));
+    e.preventDefault();
+  }
+});
+window.addEventListener('mousemove', e=>{
+  if (!draggingWater || !tankDragRect) return;
+  setWaterFromL(waterLFromY(canvasPoint(e).y));
+});
+window.addEventListener('mouseup', ()=>{ draggingWater = false; });
+
+// 스페이스바 = 발사, ←/→ = 물의 양 조절 (입력란에 포커스가 있을 땐 제외)
 window.addEventListener('keydown', e=>{
-  if (e.code === 'Space' && !['INPUT','TEXTAREA'].includes(document.activeElement.tagName)){
+  if (['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) return;
+  if (e.code === 'Space'){
     e.preventDefault();
     launchBtn.click();
+  } else if (e.code === 'ArrowLeft' || e.code === 'ArrowRight'){
+    e.preventDefault();
+    setWaterFromL(state.waterVolume*1000 + (e.code === 'ArrowRight' ? 0.05 : -0.05));
   }
 });
 
