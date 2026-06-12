@@ -184,6 +184,9 @@
       <span class="sub" id="rangeSub">발사하면 이곳에 결과가 표시돼요</span>
     </div>
     <p class="canvas-label">🎬 발사 장면 — 좌측 하단에 연료통 내부(기체분자)가 보여요</p>
+    <label class="canvas-label" style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
+      <input type="checkbox" id="tankToggle" checked style="accent-color:var(--accent2);" /> 🫧 연료통 표시 (on/off)
+    </label>
     <canvas id="sceneCanvas" width="560" height="380"></canvas>
   </div>
 
@@ -406,6 +409,7 @@ function updateMolecules(P, T, bounds){
    ===================================================================== */
 const sceneCv = document.getElementById('sceneCanvas');
 const sctx = sceneCv.getContext('2d');
+let showTank = true;       // 연료통 표시 on/off (토글)
 // 좌측 하단 연료통 내부 뷰 영역 — 로켓 경로/거리 표시와 겹치지 않게
 const TANK_BOX = { x:12, y: sceneCv.height-152, w:152, h:140 };
 
@@ -549,7 +553,7 @@ function drawRocketShape(ctx, cx, cy, len, ang){
    발사대 / 비행 좌표 매핑 — 물리좌표(m)와 픽셀좌표 분리
    원점(발사점)은 연료통 인셋 오른쪽에 두어 경로가 인셋과 겹치지 않게 한다.
    ===================================================================== */
-const ORIGIN_X = 185;      // 발사점 픽셀 x (연료통 인셋 오른쪽)
+const ORIGIN_X = 0;        // 발사점 픽셀 x — 좌하단 원점(0,0)에서 발사
 function groundY(){ return sceneCv.height - 40; }
 
 /* ── 고정 좌표 격자 (v2) ──────────────────────────────────────────────
@@ -557,11 +561,23 @@ function groundY(){ return sceneCv.height - 40; }
    → 격자선은 항상 같은 픽셀 위치에 그려져 공간에 고정되고,
      로켓은 그 위를 지나간다. 발사 간 도달 거리를 눈으로 비교할 수 있다.
    기준 가시 범위(REF_X·REF_Y)가 화면에 들어오도록 배율을 한 번만 계산한다. */
-const GRID_REF_X = 90, GRID_REF_Y = 70;   // 화면에 담을 기준 범위 (m)
-const FIXED_SCALE = Math.min(
-  (sceneCv.width - ORIGIN_X - 20) / GRID_REF_X,   // 가로 가용폭
-  (groundY() - 26) / GRID_REF_Y                   // 세로 가용높이
-);
+/* 물의 양 전체 범위(다른 값은 고정)에서 로켓이 도달하는 최대 운동 범위를 미리 계산.
+   x = 물의 양 스윕 동안의 최대 수평 이동거리, y = 최대 정점 높이 (각각 독립적으로).
+   격자를 이 범위에 맞추면 어떤 발사도 격자 밖으로 넘치지 않는다. */
+function computeMaxBounds(){
+  const saved = state.waterVolume;
+  let maxX = 1, maxY = 1;
+  const STEPS = 40;
+  for (let i=0;i<=STEPS;i++){
+    const wv = CONFIG.tankVolume * i/STEPS;
+    if (wv >= CONFIG.tankVolume - 1e-9) continue;   // 공기 없음 → 발사 불가, 제외
+    state.waterVolume = wv;
+    const { d } = simulate();
+    for (let k=0;k<d.x.length;k++){ if (d.x[k] > maxX) maxX = d.x[k]; if (d.y[k] > maxY) maxY = d.y[k]; }
+  }
+  state.waterVolume = saved;
+  return { maxX, maxY };
+}
 
 /* 눈금 간격을 1·2·5×10ⁿ 형태의 "보기 좋은" 값으로 선택 */
 function niceStep(max, divisions){
@@ -573,17 +589,18 @@ function niceStep(max, divisions){
   return mult * pow;
 }
 
-let flightMap = null;      // {scale, ox, oy, maxX, maxY, peakIdx, lastIdx}
+let flightMap = null;      // {scaleX, scaleY, ox, oy, maxX, maxY, peakIdx, lastIdx}
 function setupFlightMap(d){
   const ox = ORIGIN_X, oy = groundY();
-  const maxX = Math.max(1, ...d.x);
-  const maxY = Math.max(1, ...d.y);
-  // 배율은 고정 (발사마다 달라지지 않음) — 격자가 공간에 고정된다.
-  const scale = FIXED_SCALE;
+  // 물의 양 전체 범위에서의 최대 도달 범위에 격자를 맞춘다 (x·y 각각 독립 배율).
+  const b = computeMaxBounds();
+  const maxX = b.maxX, maxY = b.maxY;
+  const scaleX = (sceneCv.width - ox - 20) / maxX;   // 최대 수평거리에 맞춘 가로 배율
+  const scaleY = (oy - 26) / maxY;                   // 최대 정점 높이에 맞춘 세로 배율
   // 최고점(최대 높이) 인덱스
   let peakIdx = 0;
   for (let i=1;i<d.y.length;i++){ if (d.y[i] > d.y[peakIdx]) peakIdx = i; }
-  flightMap = { scale, ox, oy, maxX, maxY, peakIdx, lastIdx: d.x.length - 1 };
+  flightMap = { scaleX, scaleY, ox, oy, maxX, maxY, peakIdx, lastIdx: d.x.length - 1 };
 }
 
 /* 발사 전 대기 장면 */
@@ -604,8 +621,10 @@ function drawIdleScene(){
   sctx.fillStyle = '#0a2238'; sctx.font = '12px sans-serif';
   sctx.fillText('🚀 발사 준비 완료 — [발사!] 버튼을 누르세요', 185, 44);
 
-  const ts = currentTankState();
-  drawTankInset(sctx, TANK_BOX, ts.P, ts.T, state.waterVolume);
+  if (showTank){
+    const ts = currentTankState();
+    drawTankInset(sctx, TANK_BOX, ts.P, ts.T, state.waterVolume);
+  }
 }
 
 /* 비행 장면 (발사 중/후) */
@@ -621,14 +640,14 @@ function drawFlight(d, idx){
   // → 발사마다 격자선이 같은 픽셀에 고정되고, 로켓이 그 위를 지나간다.
   const plotR = W - 20;                       // 격자 오른쪽 끝 (캔버스 고정)
   const plotT = 26;                           // 격자 위쪽 끝 (캔버스 고정)
-  const gridMaxX = (plotR - m.ox) / FIXED_SCALE;   // 화면에 보이는 최대 x (m, 상수)
-  const gridMaxY = (m.oy - plotT) / FIXED_SCALE;   // 화면에 보이는 최대 y (m, 상수)
-  const stepX = niceStep(gridMaxX, 6), stepY = niceStep(gridMaxY, 5);  // 간격 상수
+  const gridMaxX = m.maxX;   // 격자 가로 범위 = 최대 수평 이동거리 (m)
+  const gridMaxY = m.maxY;   // 격자 세로 범위 = 최대 정점 높이 (m)
+  const stepX = niceStep(gridMaxX, 6), stepY = niceStep(gridMaxY, 5);  // 눈금 간격
   sctx.lineWidth = 1; sctx.font = '10px sans-serif';
   // 세로 기준선 + X 눈금(지면 아래 라벨)
   sctx.textAlign = 'center'; sctx.textBaseline = 'top';
   for (let xm = stepX; xm <= gridMaxX + 1e-6; xm += stepX){
-    const px = m.ox + xm*FIXED_SCALE;
+    const px = m.ox + xm*m.scaleX;
     sctx.strokeStyle = 'rgba(10,34,56,0.10)';
     sctx.beginPath(); sctx.moveTo(px, m.oy); sctx.lineTo(px, plotT); sctx.stroke();
     sctx.strokeStyle = 'rgba(10,34,56,0.30)';
@@ -639,7 +658,7 @@ function drawFlight(d, idx){
   // 가로 격자선 + Y 눈금(축 안쪽 라벨 — 좌하단 연료통 인셋과 겹치지 않게)
   sctx.textAlign = 'left'; sctx.textBaseline = 'bottom';
   for (let ym = stepY; ym <= gridMaxY + 1e-6; ym += stepY){
-    const py = m.oy - ym*FIXED_SCALE;
+    const py = m.oy - ym*m.scaleY;
     sctx.strokeStyle = 'rgba(10,34,56,0.10)';
     sctx.beginPath(); sctx.moveTo(m.ox, py); sctx.lineTo(plotR, py); sctx.stroke();
     sctx.strokeStyle = 'rgba(10,34,56,0.30)';
@@ -652,13 +671,13 @@ function drawFlight(d, idx){
   // 지나온 궤적
   sctx.strokeStyle = 'rgba(255,112,67,0.65)'; sctx.lineWidth = 2; sctx.beginPath();
   for (let i=0;i<=idx;i++){
-    const cx = m.ox + d.x[i]*m.scale, cy = m.oy - d.y[i]*m.scale;
+    const cx = m.ox + d.x[i]*m.scaleX, cy = m.oy - d.y[i]*m.scaleY;
     if (i===0) sctx.moveTo(cx,cy); else sctx.lineTo(cx,cy);
   }
   sctx.stroke();
 
   // 현재 로켓 위치 + 방향
-  const cx = m.ox + d.x[idx]*m.scale, cy = m.oy - d.y[idx]*m.scale;
+  const cx = m.ox + d.x[idx]*m.scaleX, cy = m.oy - d.y[idx]*m.scaleY;
   let ang;
   if (idx>0){
     const dx = d.x[idx]-d.x[idx-1], dy = d.y[idx]-d.y[idx-1];
@@ -681,12 +700,12 @@ function drawFlight(d, idx){
   // 최고점 / 착지점 표시
   sctx.font = '11px sans-serif'; sctx.textBaseline = 'alphabetic';
   const pk = m.peakIdx, lz = m.lastIdx;
-  const pkx = m.ox + d.x[pk]*m.scale, pky = m.oy - d.y[pk]*m.scale;
+  const pkx = m.ox + d.x[pk]*m.scaleX, pky = m.oy - d.y[pk]*m.scaleY;
   sctx.fillStyle = '#e53935';
   sctx.beginPath(); sctx.arc(pkx, pky, 3, 0, Math.PI*2); sctx.fill();
   sctx.textAlign = 'center';
   sctx.fillText(`최고점 ${d.y[pk].toFixed(1)} m`, pkx, pky-7);
-  const ldx = m.ox + d.x[lz]*m.scale, ldy = m.oy - d.y[lz]*m.scale;
+  const ldx = m.ox + d.x[lz]*m.scaleX, ldy = m.oy - d.y[lz]*m.scaleY;
   sctx.fillStyle = '#1565c0';
   sctx.beginPath(); sctx.arc(ldx, ldy, 3, 0, Math.PI*2); sctx.fill();
   sctx.textAlign = 'right';
@@ -697,7 +716,7 @@ function drawFlight(d, idx){
   sctx.fillText(`수평거리 ${d.x[idx].toFixed(1)} m · 높이 ${d.y[idx].toFixed(1)} m · 속력 ${d.speed[idx].toFixed(1)} m/s`, 185, 22);
 
   // 연료통 내부 뷰 (좌측 하단)
-  drawTankInset(sctx, TANK_BOX, d.P[idx], d.T[idx], d.waterVol[idx]);
+  if (showTank) drawTankInset(sctx, TANK_BOX, d.P[idx], d.T[idx], d.waterVol[idx]);
 }
 
 /* =====================================================================
@@ -979,6 +998,17 @@ document.querySelectorAll('#tabs button').forEach(b=>{
     currentChart = b.dataset.chart;
     renderChart();
   });
+});
+
+// 연료통 표시 on/off 토글
+document.getElementById('tankToggle').addEventListener('change', e=>{ showTank = e.target.checked; });
+
+// 스페이스바 = 발사 (입력란에 포커스가 있을 땐 제외)
+window.addEventListener('keydown', e=>{
+  if (e.code === 'Space' && !['INPUT','TEXTAREA'].includes(document.activeElement.tagName)){
+    e.preventDefault();
+    launchBtn.click();
+  }
 });
 
 // 초기 표시
