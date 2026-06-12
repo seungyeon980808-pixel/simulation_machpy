@@ -197,6 +197,7 @@
       <button data-chart="traj" class="active">궤적 (y-x)</button>
       <button data-chart="xt">수평거리 x-시간</button>
       <button data-chart="yt">높이 y-시간</button>
+      <button data-chart="peakWater" class="key">정점높이-물의양</button>
     </div>
     <div class="chartbox"><canvas id="chart"></canvas></div>
     <div class="overlay-ctrl">
@@ -273,6 +274,7 @@ const state = {
 
 let history = [];        // 이전 발사 궤적 저장 (겹쳐보기용)
 let results = [];        // 발사 기록 {waterL, rangeM} — 핵심 학습 그래프/표용
+let peakPoints = [];     // 정점높이-물의양 산점도 {x:물의 양(L), y:정점 높이(m)} — 발사마다 한 점씩 누적
 
 /* =====================================================================
    탱크 상태 계산 (발사 전, 고정 압력 기준)
@@ -804,7 +806,96 @@ const COMMON_SCALE = (xl, yl) => ({
    - history 의 마지막 항목 = 가장 최근 발사 → '현재 발사'로 강조(굵은 실선/고유색)
    - 그 이전 항목들 = 발사별 고유색으로 흐리게 점선 겹침 ('발사 N' 범례)
    - 겹쳐보기 체크 해제 시 현재 발사만 표시 */
+/* 정점 높이 vs 물의 양 (v3) — 더 이상 전 범위를 미리 계산하지 않는다.
+   발사할 때마다 (그 발사의 물의 양, 그 발사가 도달한 정점 높이) 한 점을
+   peakPoints 에 누적하고, 그 점들 위에 2차(quadratic) 회귀 추세선을 겹쳐 그린다.
+   점이 늘어날수록 추세선이 다시 계산되어 갱신된다. */
+
+/* 3×3 선형계 풀이 (부분 피벗 가우스 소거) — 회귀 정규방정식용 */
+function solve3(A, b){
+  const M = [[A[0][0],A[0][1],A[0][2],b[0]],
+             [A[1][0],A[1][1],A[1][2],b[1]],
+             [A[2][0],A[2][1],A[2][2],b[2]]];
+  for (let c=0;c<3;c++){
+    // 피벗 선택
+    let piv = c;
+    for (let r=c+1;r<3;r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+    if (Math.abs(M[piv][c]) < 1e-12) return null;   // 특이행렬 → 해 없음
+    [M[c], M[piv]] = [M[piv], M[c]];
+    // 소거
+    for (let r=0;r<3;r++){
+      if (r === c) continue;
+      const f = M[r][c] / M[c][c];
+      for (let k=c;k<4;k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  return [M[0][3]/M[0][0], M[1][3]/M[1][1], M[2][3]/M[2][2]];
+}
+
+/* 2차 다항 회귀: y = a·x² + b·x + c (최소제곱). 점이 3개 미만이면 null */
+function quadFit(points){
+  const n = points.length;
+  if (n < 3) return null;
+  let Sx=0,Sx2=0,Sx3=0,Sx4=0,Sy=0,Sxy=0,Sx2y=0;
+  for (const p of points){
+    const x=p.x, y=p.y, x2=x*x;
+    Sx+=x; Sx2+=x2; Sx3+=x2*x; Sx4+=x2*x2;
+    Sy+=y; Sxy+=x*y; Sx2y+=x2*y;
+  }
+  const sol = solve3(
+    [[n,Sx,Sx2],[Sx,Sx2,Sx3],[Sx2,Sx3,Sx4]],
+    [Sy,Sxy,Sx2y]
+  );
+  if (!sol) return null;
+  const [c,b,a] = sol;     // 정규방정식 해 순서: [c, b, a]
+  return { a, b, c };
+}
+
+function renderPeakVsWater(){
+  const pts = peakPoints.slice();
+  const datasets = [{
+    type:'scatter',
+    label:'발사 결과 (물의 양 → 정점 높이)',
+    data: pts,
+    borderColor:'#4fc3f7', backgroundColor:'#4fc3f7',
+    pointRadius:5, pointHoverRadius:7, showLine:false,
+  }];
+
+  // 2차 회귀 추세선 (점 3개 이상일 때) — 점이 추가될 때마다 다시 계산
+  const fit = quadFit(pts);
+  if (fit){
+    const xs = pts.map(p=>p.x);
+    const xmin = Math.min(...xs), xmax = Math.max(...xs);
+    const curve = [];
+    const N = 60;
+    for (let i=0;i<=N;i++){
+      const x = xmin + (xmax - xmin) * i/N;
+      curve.push({ x, y: fit.a*x*x + fit.b*x + fit.c });
+    }
+    datasets.push({
+      type:'line',
+      label:'2차 회귀 추세선',
+      data: curve,
+      borderColor:'#ffd54f', backgroundColor:'#ffd54f',
+      borderWidth:2.5, pointRadius:0, showLine:true, tension:0,
+    });
+  }
+
+  const cfg = {
+    type:'scatter',
+    data:{ datasets },
+    options:{
+      responsive:true, maintainAspectRatio:false, animation:false, parsing:false,
+      plugins:{ legend:{ display:true, labels:{color:'#9fb2cc', font:{size:10}} } },
+      scales: COMMON_SCALE('물의 양 (L)', '정점 높이 (m)'),
+    }
+  };
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById('chart'), cfg);
+}
+
 function renderChart(){
+  if (currentChart === 'peakWater'){ renderPeakVsWater(); return; }
   const def = CHART_DEF[currentChart];
   const datasets = [];
   const showHist = document.getElementById('overlay').checked;
@@ -964,6 +1055,9 @@ launchBtn.addEventListener('click', ()=>{
 
   // 콘솔 한 줄 요약 (발사별)
   const peakM = Math.max(...dd.y), maxSpeed = Math.max(...dd.speed);
+
+  // 정점높이-물의양 산점도에 이번 발사 한 점 추가 (누적) → 2차 회귀선 갱신
+  peakPoints.push({ x: state.waterVolume*1000, y: peakM });
   console.log(
     `🚀 발사 ${launchNo}: 물 ${(state.waterVolume*1000).toFixed(2)}L · 발사각 ${CONFIG.LAUNCH_ANGLE_DEG}° · `
     + `최고점 ${peakM.toFixed(1)}m · 수평거리 ${rangeM.toFixed(1)}m · 최고속력 ${maxSpeed.toFixed(1)}m/s`
@@ -996,6 +1090,7 @@ document.getElementById('resetBtn').addEventListener('click', ()=>{
 // 기록 지우기 (표 + 핵심 그래프 데이터)
 document.getElementById('clearResults').addEventListener('click', ()=>{
   results = [];
+  peakPoints = [];
   document.getElementById('rangeReadout').textContent = '— m';
   document.getElementById('rangeSub').textContent = '발사하면 이곳에 결과가 표시돼요';
   updateResultsTable();
