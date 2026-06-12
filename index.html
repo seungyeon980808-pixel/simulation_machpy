@@ -191,12 +191,9 @@
   <div class="col col-right">
     <h2 class="section">그래프</h2>
     <div class="tabs" id="tabs">
-      <button data-chart="rangeWater" class="key active">★ 수평거리-물의양</button>
-      <button data-chart="speed">속도 vx·vy-시간</button>
-      <button data-chart="accel">가속도-시간</button>
-      <button data-chart="dist">거리-시간</button>
-      <button data-chart="pt">압력-온도</button>
-      <button data-chart="traj">궤적 (y-x)</button>
+      <button data-chart="traj" class="active">궤적 (y-x)</button>
+      <button data-chart="xt">수평거리 x-시간</button>
+      <button data-chart="yt">높이 y-시간</button>
     </div>
     <div class="chartbox"><canvas id="chart"></canvas></div>
     <div class="overlay-ctrl">
@@ -731,7 +728,7 @@ requestAnimationFrame(loop);
    그래프 (Chart.js)
    ===================================================================== */
 let chart = null;
-let currentChart = 'rangeWater';
+let currentChart = 'traj';
 
 function sample(d, key){
   const N = d.t.length, M = 160;
@@ -750,22 +747,15 @@ function sampleXY(d, xKey, yKey, fx, fy){
 }
 
 const CHART_DEF = {
-  // 속도-시간: vx(수평)·vy(연직) 두 성분으로 분리 (v2)
-  speed: { title:'속도(성분)-시간', xl:'시간 (s)', yl:'속도 (m/s)',
-           lines: [
-             { label:'vx', key:'vx', color:'#4fc3f7', dash:[] },      // 수평 — 파랑 실선
-             { label:'vy', key:'vy', color:'#ff7043', dash:[7,4] },   // 연직 — 주황 점선
-           ] },
-  accel: { title:'가속도-시간', xl:'시간 (s)', yl:'가속도 (m/s²)', color:'#ffd54f',
-           data: d => sample(d,'accel') },
-  dist:  { title:'거리-시간', xl:'시간 (s)', yl:'발사점으로부터 거리 (m)', color:'#66bb6a',
-           data: d => { const a=[]; const N=d.t.length, step=Math.max(1,Math.floor(N/160));
-                        for(let i=0;i<N;i+=step) a.push({x:d.t[i], y:Math.hypot(d.x[i],d.y[i])});
-                        if(N>0) a.push({x:d.t[N-1], y:Math.hypot(d.x[N-1],d.y[N-1])}); return a; } },
-  pt:    { title:'압력-온도', xl:'온도 (°C)', yl:'압력 (atm)', color:'#ff7043',
-           data: d => sampleXY(d,'T','P', T=>T-273.15, P=>P/CONFIG.Patm) },
+  // 궤적: 높이 y vs 수평거리 x
   traj:  { title:'궤적 (y-x)', xl:'수평거리 x (m)', yl:'높이 y (m)', color:'#ce93d8',
            data: d => sampleXY(d,'x','y', x=>x, y=>y) },
+  // 수평거리 x - 시간
+  xt:    { title:'수평거리 x-시간', xl:'시간 (s)', yl:'수평거리 x (m)', color:'#4fc3f7',
+           data: d => sample(d,'x') },
+  // 높이 y - 시간
+  yt:    { title:'높이 y-시간', xl:'시간 (s)', yl:'높이 y (m)', color:'#66bb6a',
+           data: d => sample(d,'y') },
 };
 
 const COMMON_SCALE = (xl, yl) => ({
@@ -775,35 +765,11 @@ const COMMON_SCALE = (xl, yl) => ({
       grid:{color:'#22324d'}, ticks:{color:'#9fb2cc'}, beginAtZero:true },
 });
 
-/* 핵심 학습 그래프: 수평거리 vs 물의 양 (발사할 때마다 점이 쌓임) */
-function renderRangeWaterChart(){
-  const pts = results.map(r=>({ x:r.waterL, y:r.rangeM })).sort((a,b)=>a.x-b.x);
-  const datasets = [{
-    label:'수평 이동거리 vs 물의 양', data: pts,
-    borderColor:'#4fc3f7', backgroundColor:'#4fc3f7',
-    showLine:true, pointRadius:5, pointHoverRadius:8, borderWidth:2.5, tension:0.25,
-  }];
-  const cfg = {
-    type:'line',
-    data:{ datasets },
-    options:{
-      responsive:true, maintainAspectRatio:false, animation:false, parsing:false,
-      plugins:{ legend:{ display:true, labels:{color:'#9fb2cc', font:{size:11}} } },
-      scales: COMMON_SCALE('물의 양 (L)', '수평 이동거리 (m)'),
-    }
-  };
-  cfg.options.scales.x.min = 0; cfg.options.scales.x.max = CONFIG.tankVolume*1000;
-  if (chart) chart.destroy();
-  chart = new Chart(document.getElementById('chart'), cfg);
-}
-
 /* 발사할 때마다 곡선이 누적(겹쳐) 표시된다 (v2).
    - history 의 마지막 항목 = 가장 최근 발사 → '현재 발사'로 강조(굵은 실선/고유색)
    - 그 이전 항목들 = 발사별 고유색으로 흐리게 점선 겹침 ('발사 N' 범례)
    - 겹쳐보기 체크 해제 시 현재 발사만 표시 */
 function renderChart(){
-  if (currentChart === 'rangeWater'){ renderRangeWaterChart(); return; }
-
   const def = CHART_DEF[currentChart];
   const datasets = [];
   const showHist = document.getElementById('overlay').checked;
@@ -813,30 +779,16 @@ function renderChart(){
     const isCurrent = hi === n - 1;          // 마지막 = 가장 최근 발사
     if (!isCurrent && !showHist) return;     // 겹쳐보기 OFF면 이전 발사 생략
 
-    if (def.lines){
-      // 속도 성분(vx·vy): 현재 발사는 vx=파랑실선 / vy=주황점선, 이전 발사는 발사색으로 흐리게
-      def.lines.forEach(ln=>{
-        datasets.push({
-          label: isCurrent ? ln.label : `${h.label} ${ln.label}`,
-          data: sample(h.d, ln.key),
-          borderColor: isCurrent ? ln.color : h.color,
-          borderWidth: isCurrent ? 2.5 : 1.2,
-          borderDash: isCurrent ? ln.dash : (ln.key==='vy' ? [7,4] : [2,3]),
-          pointRadius:0, showLine:true, tension:0.15,
-        });
-      });
-    } else {
-      // 단일 곡선 차트: 현재 발사는 기본색 실선, 이전 발사는 발사색 점선
-      datasets.push({
-        label: isCurrent ? def.title : h.label,
-        data: def.data(h.d),
-        borderColor: isCurrent ? def.color : h.color,
-        backgroundColor: isCurrent ? def.color : h.color,
-        borderWidth: isCurrent ? 2.5 : 1.4,
-        borderDash: isCurrent ? [] : [5,4],
-        pointRadius:0, showLine:true, tension:0.15,
-      });
-    }
+    // 발사 곡선: 현재 발사는 기본색 실선, 이전 발사는 발사색 점선
+    datasets.push({
+      label: isCurrent ? def.title : h.label,
+      data: def.data(h.d),
+      borderColor: isCurrent ? def.color : h.color,
+      backgroundColor: isCurrent ? def.color : h.color,
+      borderWidth: isCurrent ? 2.5 : 1.4,
+      borderDash: isCurrent ? [] : [5,4],
+      pointRadius:0, showLine:true, tension:0.15,
+    });
   });
 
   const cfg = {
@@ -973,7 +925,6 @@ launchBtn.addEventListener('click', ()=>{
     label: `발사 ${launchNo}`,
     d: dd,
     color: histColors[history.length % histColors.length],
-    traj: sampleXY(dd,'x','y',x=>x,y=>y),
   });
 
   // 콘솔 한 줄 요약 (발사별)
